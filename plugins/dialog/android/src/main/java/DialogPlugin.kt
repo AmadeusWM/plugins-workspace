@@ -34,6 +34,12 @@ class FilePickerOptions {
 }
 
 @InvokeArg
+class FolderPickerOptions {
+  lateinit var filters: Array<Filter>
+  var multiple: Boolean? = null
+}
+
+@InvokeArg
 class MessageOptions {
   var title: String? = null
   lateinit var message: String
@@ -115,7 +121,62 @@ class DialogPlugin(private val activity: Activity): Plugin(activity) {
     callResult.put("files", JSArray.from(uris.toTypedArray()))
     return callResult
   }
-  
+
+  @Command
+  fun showFolderPicker(invoke: Invoke) {
+    try {
+      val args = invoke.parseArgs(FolderPickerOptions::class.java)
+      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+      intent.addCategory(Intent.CATEGORY_DEFAULT)
+
+      intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, args.multiple ?: false)
+
+      startActivityForResult(invoke, intent, "folderPickerResult")
+    } catch (ex: Exception) {
+      val message = ex.message ?: "Failed to pick folder"
+      Logger.error(message)
+      invoke.reject(message)
+    }
+  }
+
+  @ActivityCallback
+  fun folderPickerResult(invoke: Invoke, result: ActivityResult) {
+    try {
+      when (result.resultCode) {
+        Activity.RESULT_OK -> {
+          val callResult = createPickFoldersResult(result.data)
+          invoke.resolve(callResult)
+        }
+        Activity.RESULT_CANCELED -> invoke.reject("Folder picker cancelled")
+        else -> invoke.reject("Failed to pick folder")
+      }
+    } catch (ex: Exception) {
+      val message = ex.message ?: "Failed to read folder pick result"
+      Logger.error(message)
+      invoke.reject(message)
+    }
+  }
+
+  private fun createPickFoldersResult(data: Intent?): JSObject {
+    val callResult = JSObject()
+    if (data == null) {
+      callResult.put("folders", null)
+      return callResult
+    }
+    val uris: MutableList<String?> = ArrayList()
+    if (data.clipData == null) {
+      val uri: Uri? = data.data
+      uris.add(uri?.toString())
+    } else {
+      for (i in 0 until data.clipData!!.itemCount) {
+        val uri: Uri = data.clipData!!.getItemAt(i).uri
+        uris.add(uri.toString())
+      }
+    }
+    callResult.put("folders", JSArray.from(uris.toTypedArray()))
+    return callResult
+  }
+
   private fun parseFiltersOption(filters: Array<Filter>): Array<String> {
     val mimeTypes = mutableListOf<String>()
     for (filter in filters) {
