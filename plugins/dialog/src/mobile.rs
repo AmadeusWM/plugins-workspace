@@ -50,6 +50,11 @@ struct FilePickerResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct FolderPickerResponse {
+    folders: Vec<FilePath>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SaveFileResponse {
     file: FilePath,
 }
@@ -82,6 +87,42 @@ pub fn pick_files<R: Runtime, F: FnOnce(Option<Vec<FilePath>>) + Send + 'static>
             .run_mobile_plugin::<FilePickerResponse>("showFilePicker", dialog.payload(true));
         if let Ok(response) = res {
             f(Some(response.files))
+        } else {
+            f(None)
+        }
+    });
+}
+
+#[cfg(target_os = "android")]
+pub fn pick_folder<R: Runtime, F: FnOnce(Option<FilePath>) + Send + 'static>(
+    dialog: FileDialogBuilder<R>,
+    f: F,
+) {
+    std::thread::spawn(move || {
+        let res = dialog
+            .dialog
+            .0
+            .run_mobile_plugin::<FolderPickerResponse>("showFolderPicker", dialog.payload(false));
+        if let Ok(response) = res {
+            f(Some(response.folders.into_iter().next().unwrap()))
+        } else {
+            f(None)
+        }
+    });
+}
+
+#[cfg(target_os = "android")]
+pub fn pick_folders<R: Runtime, F: FnOnce(Option<Vec<FilePath>>) + Send + 'static>(
+    dialog: FileDialogBuilder<R>,
+    f: F,
+) {
+    std::thread::spawn(move || {
+        let res = dialog
+            .dialog
+            .0
+            .run_mobile_plugin::<FolderPickerResponse>("showFolderPicker", dialog.payload(true));
+        if let Ok(response) = res {
+            f(Some(response.folders))
         } else {
             f(None)
         }

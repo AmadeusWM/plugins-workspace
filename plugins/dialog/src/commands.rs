@@ -16,9 +16,9 @@ use crate::{
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum OpenResponse {
-    #[cfg(desktop)]
+    #[cfg(any(desktop, target_os = "android"))]
     Folders(Option<Vec<FilePath>>),
-    #[cfg(desktop)]
+    #[cfg(any(desktop, target_os = "android"))]
     Folder(Option<FilePath>),
     Files(Option<Vec<FilePath>>),
     File(Option<FilePath>),
@@ -143,7 +143,7 @@ pub(crate) async fn open<R: Runtime>(
     }
 
     let res = if options.directory {
-        #[cfg(desktop)]
+        #[cfg(any(desktop, target_os = "android"))]
         {
             let tauri_scope = window.state::<tauri::scope::Scopes>();
 
@@ -175,7 +175,7 @@ pub(crate) async fn open<R: Runtime>(
                 OpenResponse::Folder(folder.map(|p| p.simplified()))
             }
         }
-        #[cfg(mobile)]
+        #[cfg(target_os = "ios")]
         return Err(crate::Error::FolderPickerNotImplemented);
     } else if options.multiple {
         let tauri_scope = window.state::<tauri::scope::Scopes>();
