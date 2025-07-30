@@ -27,6 +27,16 @@ class FilePickerUtils {
 
   companion object {
     fun getPathFromUri(context: Context, uri: Uri): String? {
+
+      if (DocumentsContract.isTreeUri(uri)) {
+        val docId = DocumentsContract.getTreeDocumentId(uri)
+        val split = docId.split(":")
+        return if (split.size > 1 && "primary".equals(split[0], ignoreCase = true)) {
+          "${Environment.getExternalStorageDirectory()}/${split[1]}"
+        } else {
+          null
+        }
+      }
       if (DocumentsContract.isDocumentUri(context, uri)) {
         if (isExternalStorageDocument(uri)) {
           val docId = DocumentsContract.getDocumentId(uri)

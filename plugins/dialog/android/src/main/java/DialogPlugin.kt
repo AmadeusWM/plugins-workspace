@@ -4,6 +4,7 @@
 
 package app.tauri.dialog
 
+import android.R.attr
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
@@ -12,6 +13,8 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.MimeTypeMap
 import androidx.activity.result.ActivityResult
+import androidx.core.net.toUri
+import androidx.documentfile.provider.DocumentFile
 import app.tauri.Logger
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
@@ -21,6 +24,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+
 
 @InvokeArg
 class Filter {
@@ -163,14 +167,19 @@ class DialogPlugin(private val activity: Activity): Plugin(activity) {
       callResult.put("folders", null)
       return callResult
     }
+    val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
     val uris: MutableList<String?> = ArrayList()
     if (data.clipData == null) {
       val uri: Uri? = data.data
-      uris.add(uri?.toString())
+      if (uri !== null) {
+        val fsPath = FilePickerUtils.getPathFromUri(activity, uri)
+        uris.add(fsPath)
+      }
     } else {
       for (i in 0 until data.clipData!!.itemCount) {
         val uri: Uri = data.clipData!!.getItemAt(i).uri
-        uris.add(uri.toString())
+        val fsPath = FilePickerUtils.getPathFromUri(activity, uri)
+        uris.add(fsPath)
       }
     }
     callResult.put("folders", JSArray.from(uris.toTypedArray()))

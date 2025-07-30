@@ -8,7 +8,7 @@ use tauri::{
     AppHandle, Runtime,
 };
 
-use crate::{models::*, FilePath, OpenOptions};
+use crate::{commands::DirEntry, models::*, FilePath, OpenOptions};
 
 #[cfg(target_os = "android")]
 const PLUGIN_IDENTIFIER: &str = "com.plugin.fs";
@@ -74,7 +74,7 @@ impl<R: Runtime> Fs<R> {
         uri: impl Into<String>,
         mode: impl Into<String>,
     ) -> crate::Result<std::fs::File> {
-        #[cfg(target_os = "android")]
+      #[cfg(target_os = "android")]
         {
             let result = self.0.run_mobile_plugin::<GetFileDescriptorResponse>(
                 "getFileDescriptor",
@@ -92,5 +92,32 @@ impl<R: Runtime> Fs<R> {
                 todo!()
             }
         }
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn resolve_content_uri_dir(
+      &self,
+      uri: impl Into<String>
+    ) ->  std::io::Result<Vec<DirEntry>> {
+        let uri = uri.into();
+        let result = self.0.run_mobile_plugin::<ReadDirResponse>(
+            "readDir",
+            ReadDirPayload {
+                uri: uri,
+            },
+        ).map_err(
+            |e| 
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to read dir: {e}")
+            ))?;
+        Ok(result.entries.into_iter().map(|result| {
+            DirEntry {
+                name: result.name,
+                is_directory: result.is_directory,
+                is_file: result.is_file,
+                is_symlink: false,
+            }
+        }).collect())
     }
 }
