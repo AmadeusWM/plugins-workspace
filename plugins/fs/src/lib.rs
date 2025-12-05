@@ -19,7 +19,7 @@ use tauri::{
     AppHandle, DragDropEvent, Manager, RunEvent, Runtime, WindowEvent,
 };
 
-mod commands;
+pub mod commands;
 mod config;
 #[cfg(not(target_os = "android"))]
 mod desktop;

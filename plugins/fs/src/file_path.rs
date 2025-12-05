@@ -105,6 +105,48 @@ impl SafeFilePath {
             }
         }
     }
+
+    /// Check if this is an Android content:// URI
+    #[inline]
+    pub fn is_content_uri(&self) -> bool {
+        match self {
+            Self::Url(url) => url.scheme() == "content",
+            Self::Path(_) => false,
+        }
+    }
+
+    /// Extract the base content URI and relative path from a SAF path.
+    /// 
+    /// The TypeScript side encodes SAF paths as: `content://...#safPath=relative/path`
+    /// This method extracts both parts.
+    /// 
+    /// Returns `Some((base_uri, relative_path))` if this is a content URI with a safPath fragment,
+    /// or `Some((base_uri, ""))` if it's a plain content URI.
+    /// Returns `None` if this is not a content URI.
+    #[inline]
+    pub fn extract_saf_parts(&self) -> Option<(String, String)> {
+        match self {
+            Self::Url(url) if url.scheme() == "content" => {
+                let fragment = url.fragment();
+                if let Some(frag) = fragment {
+                    // Look for safPath= in the fragment
+                    if let Some(rest) = frag.strip_prefix("safPath=") {
+                        // URL decode the relative path
+                        let relative_path = urlencoding::decode(rest)
+                            .map(|s| s.into_owned())
+                            .unwrap_or_else(|_| rest.to_string());
+                        // Build base URI without fragment
+                        let mut base_url = url.clone();
+                        base_url.set_fragment(None);
+                        return Some((base_url.to_string(), relative_path));
+                    }
+                }
+                // Plain content URI without relative path
+                Some((url.to_string(), String::new()))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for FilePath {

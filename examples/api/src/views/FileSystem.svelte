@@ -4,6 +4,7 @@
   import { convertFileSrc } from '@tauri-apps/api/core'
   import { arrayBufferToBase64 } from '../lib/utils'
   import { onDestroy, onMount } from 'svelte'
+  import * as dialog from "@tauri-apps/plugin-dialog";
 
   const { onMessage, insecureRenderHtml } = $props()
 
@@ -20,15 +21,40 @@
   let unwatchFn
   let unwatchPath = ''
   let isMobile = $state(false)
+  // Custom BaseDir support (for Android SAF Content URIs)
+  let customBaseDir = $state("");
+  let useCustomBaseDir = $state(false);
+
 
   onMount(() => {
     let platform = os.platform()
     isMobile = platform === 'android' || platform === 'ios'
   })
+  function getDir() {
+    // If using custom BaseDir (Content URI), return it as string
+    if (useCustomBaseDir && customBaseDir) {
+      return customBaseDir;
+    }
+    const dirSelect = document.getElementById("dir");
+    return dirSelect.value ? parseInt(dir.value) : null;
+  }
 
   const dirOptions = Object.keys(fs.BaseDirectory).filter((key) =>
     isNaN(parseInt(key))
   )
+
+  async function pickFolder() {
+    try {
+      const selected = await dialog.open({ directory: true });
+      if (selected) {
+        customBaseDir = selected;
+        useCustomBaseDir = true;
+        onMessage(`Selected folder: ${selected}`);
+      }
+    } catch (e) {
+      onMessage(e);
+    }
+  }
 
   function open() {
     fs.open(path, {
@@ -204,6 +230,23 @@
     </div>
     <br />
   {/if}
+  <!-- Custom BaseDir / Content URI section -->
+  <div class="flex flex-col gap-1 mb-4 p-2 border rounded">
+    <div class="flex items-center gap-2">
+      <input type="checkbox" id="use-custom-basedir" bind:checked={useCustomBaseDir} />
+      <label for="use-custom-basedir">Use Custom BaseDir (Content URI)</label>
+      <button class="btn" onclick={pickFolder}>Pick Folder</button>
+    </div>
+    {#if useCustomBaseDir}
+      <input
+        class="input grow"
+        placeholder="Content URI (e.g., content://...)"
+        bind:value={customBaseDir}
+      />
+      <small class="text-gray-500">On Android, use the folder picker to get a Content URI for SAF support</small>
+    {/if}
+  </div>
+
   <div class="flex gap-1">
     <select class="input" bind:value={baseDir}>
       <option value={undefined} selected>None</option>

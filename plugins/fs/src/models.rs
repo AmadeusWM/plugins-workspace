@@ -36,3 +36,134 @@ pub struct ReadDirEntry {
 pub struct ReadDirResponse {
     pub entries: Vec<ReadDirEntry>
 }
+
+// ===== SAF (Storage Access Framework) Models =====
+
+/// Payload for SAF read directory operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafReadDirPayload {
+    pub base_uri: String,
+    pub path: String,
+}
+
+/// Payload for SAF read file operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafReadFilePayload {
+    pub base_uri: String,
+    pub path: String,
+}
+
+/// Response for SAF read file operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafReadFileResponse {
+    pub data: String, // Base64 encoded
+}
+
+/// Payload for SAF write file operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafWriteFilePayload {
+    pub base_uri: String,
+    pub path: String,
+    pub data: String, // Base64 encoded
+    #[serde(default)]
+    pub append: bool,
+    #[serde(default = "default_true")]
+    pub create: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Payload for SAF create file operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafCreateFilePayload {
+    pub base_uri: String,
+    pub path: String,
+}
+
+/// Response for SAF create file operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafCreateFileResponse {
+    pub uri: Option<String>,
+}
+
+/// Payload for SAF mkdir operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafMkdirPayload {
+    pub base_uri: String,
+    pub path: String,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+/// Payload for SAF remove operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafRemovePayload {
+    pub base_uri: String,
+    pub path: String,
+}
+
+/// Payload for SAF rename operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafRenamePayload {
+    pub base_uri: String,
+    pub old_path: String,
+    pub new_path: String,
+}
+
+/// Payload for SAF copy file operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafCopyFilePayload {
+    pub base_uri: String,
+    pub from_path: String,
+    pub to_path: String,
+}
+
+/// Payload for SAF stat operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafStatPayload {
+    pub base_uri: String,
+    pub path: String,
+}
+
+/// Response for SAF stat operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafStatResponse {
+    pub is_file: bool,
+    pub is_directory: bool,
+    pub size: u64,
+    pub mtime: Option<u64>,
+}
+
+/// Payload for SAF exists operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafExistsPayload {
+    pub base_uri: String,
+    pub path: String,
+}
+
+/// Response for SAF exists operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafExistsResponse {
+    pub exists: bool,
+}
+
+/// Empty response for operations that don't return data
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafEmptyResponse {}
