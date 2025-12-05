@@ -167,3 +167,39 @@ pub struct SafExistsResponse {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SafEmptyResponse {}
+
+/// Payload for SAF watch operation (only Serialize, no Deserialize since Channel doesn't impl Deserialize)
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafWatchPayload<T: serde::Serialize> {
+    pub base_uri: String,
+    pub path: String,
+    #[serde(default)]
+    pub recursive: bool,
+    pub on_event: tauri::ipc::Channel<T>,
+}
+
+/// Event from SAF content observer
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafWatchEvent {
+    pub watcher_id: i32,
+    pub uri: Option<String>,
+    pub self_change: bool,
+    #[serde(rename = "type")]
+    pub event_type: String,
+}
+
+/// Response from SAF watch operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafWatchResponse {
+    pub watcher_id: i32,
+}
+
+/// Payload for SAF unwatch operation
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafUnwatchPayload {
+    pub watcher_id: i32,
+}

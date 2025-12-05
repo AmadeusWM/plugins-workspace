@@ -1837,6 +1837,30 @@
           "markdownDescription": "Denies the rename command without any pre-configured scope."
         },
         {
+          "description": "Enables the saf_unwatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-saf-unwatch",
+          "markdownDescription": "Enables the saf_unwatch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the saf_unwatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-saf-unwatch",
+          "markdownDescription": "Denies the saf_unwatch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the saf_watch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-saf-watch",
+          "markdownDescription": "Enables the saf_watch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the saf_watch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-saf-watch",
+          "markdownDescription": "Denies the saf_watch command without any pre-configured scope."
+        },
+        {
           "description": "Enables the seek command without any pre-configured scope.",
           "type": "string",
           "const": "allow-seek",

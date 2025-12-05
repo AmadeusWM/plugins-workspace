@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-saf-unwatch"
+description = "Enables the saf_unwatch command without any pre-configured scope."
+commands.allow = ["saf_unwatch"]
+
+[[permission]]
+identifier = "deny-saf-unwatch"
+description = "Denies the saf_unwatch command without any pre-configured scope."
+commands.deny = ["saf_unwatch"]

@@ -419,6 +419,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Option<config::Config>> {
             commands::size,
             #[cfg(feature = "watch")]
             watcher::watch,
+            #[cfg(target_os = "android")]
+            commands::saf_watch,
+            #[cfg(target_os = "android")]
+            commands::saf_unwatch,
         ])
         .setup(|app, api| {
             let scope = Scope {
