@@ -912,6 +912,17 @@ async fn write_file_inner<R: Runtime>(
         .and_then(|p| p.to_str().ok())
         .and_then(|opts| serde_json::from_str(opts).ok());
 
+    let data = match request.body() {
+        tauri::ipc::InvokeBody::Raw(data) => Cow::Borrowed(data),
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Array(data)) => Cow::Owned(
+            data.iter()
+                .flat_map(|v| v.as_number().and_then(|v| v.as_u64().map(|v| v as u8)))
+                .collect(),
+        ),
+        _ => return Err(anyhow::anyhow!("unexpected invoke body").into()),
+    };
+
+
     // Check if this is an Android SAF content URI
     #[cfg(target_os = "android")]
     if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
@@ -957,16 +968,6 @@ async fn write_file_inner<R: Runtime>(
             }
         },
     )?;
-
-    let data = match request.body() {
-        tauri::ipc::InvokeBody::Raw(data) => Cow::Borrowed(data),
-        tauri::ipc::InvokeBody::Json(serde_json::Value::Array(data)) => Cow::Owned(
-            data.iter()
-                .flat_map(|v| v.as_number().and_then(|v| v.as_u64().map(|v| v as u8)))
-                .collect(),
-        ),
-        _ => return Err(anyhow::anyhow!("unexpected invoke body").into()),
-    };
 
     file.write_all(&data)
         .map_err(|e| {
