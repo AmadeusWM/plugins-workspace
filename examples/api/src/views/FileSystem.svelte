@@ -1,5 +1,6 @@
 <script>
   import * as fs from "@tauri-apps/plugin-fs";
+  import * as dialog from "@tauri-apps/plugin-dialog";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { arrayBufferToBase64 } from "../lib/utils";
   import { onDestroy } from "svelte";
@@ -17,8 +18,16 @@
   let watchRecursive = false;
   let unwatchFn;
   let unwatchPath = "";
+  
+  // Custom BaseDir support (for Android SAF Content URIs)
+  let customBaseDir = "";
+  let useCustomBaseDir = false;
 
   function getDir() {
+    // If using custom BaseDir (Content URI), return it as string
+    if (useCustomBaseDir && customBaseDir) {
+      return customBaseDir;
+    }
     const dirSelect = document.getElementById("dir");
     return dirSelect.value ? parseInt(dir.value) : null;
   }
@@ -26,6 +35,19 @@
   const DirOptions = Object.keys(fs.BaseDirectory)
     .filter((key) => isNaN(parseInt(key)))
     .map((dir) => [dir, fs.BaseDirectory[dir]]);
+
+  async function pickFolder() {
+    try {
+      const selected = await dialog.open({ directory: true });
+      if (selected) {
+        customBaseDir = selected;
+        useCustomBaseDir = true;
+        onMessage(`Selected folder: ${selected}`);
+      }
+    } catch (e) {
+      onMessage(e);
+    }
+  }
 
   function open() {
     fs.open(path, {
@@ -184,8 +206,25 @@
 </script>
 
 <div class="flex flex-col">
+  <!-- Custom BaseDir / Content URI section -->
+  <div class="flex flex-col gap-1 mb-4 p-2 border rounded">
+    <div class="flex items-center gap-2">
+      <input type="checkbox" id="use-custom-basedir" bind:checked={useCustomBaseDir} />
+      <label for="use-custom-basedir">Use Custom BaseDir (Content URI)</label>
+      <button class="btn" on:click={pickFolder}>Pick Folder</button>
+    </div>
+    {#if useCustomBaseDir}
+      <input
+        class="input grow"
+        placeholder="Content URI (e.g., content://...)"
+        bind:value={customBaseDir}
+      />
+      <small class="text-gray-500">On Android, use the folder picker to get a Content URI for SAF support</small>
+    {/if}
+  </div>
+
   <div class="flex gap-1">
-    <select class="input" id="dir">
+    <select class="input" id="dir" disabled={useCustomBaseDir}>
       <option value="">None</option>
       {#each DirOptions as dir}
         <option value={dir[1]}>{dir[0]}</option>

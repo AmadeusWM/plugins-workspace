@@ -22,7 +22,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{scope::Entry, Error, FsExt, SafeFilePath};
+use crate::{scope::Entry, Error, SafeFilePath};
+#[cfg(target_os = "android")]
+use crate::FsExt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
@@ -166,6 +168,20 @@ pub async fn copy_file<R: Runtime>(
     to_path: SafeFilePath,
     options: Option<CopyFileOptions>,
 ) -> CommandResult<()> {
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, from_relative)) = from_path.extract_saf_parts() {
+        // Extract relative path from to_path
+        let to_relative = if let Some((_, rel)) = to_path.extract_saf_parts() {
+            rel
+        } else {
+            // If to_path is just a regular path, use it as the relative path
+            to_path.into_path()?.to_string_lossy().to_string()
+        };
+        return webview.fs().saf_copy_file(base_uri, from_relative, to_relative)
+            .map_err(|e| CommandError::from(format!("SAF copy_file failed: {e}")));
+    }
+    
     let resolved_from_path = resolve_path(
         &webview,
         &global_scope,
@@ -207,6 +223,14 @@ pub fn mkdir<R: Runtime>(
     path: SafeFilePath,
     options: Option<MkdirOptions>,
 ) -> CommandResult<()> {
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
+        let recursive = options.as_ref().and_then(|o| o.recursive).unwrap_or(false);
+        return webview.fs().saf_mkdir(base_uri, relative_path, recursive)
+            .map_err(|e| CommandError::from(format!("SAF mkdir failed: {e}")));
+    }
+    
     let resolved_path = resolve_path(
         &webview,
         &global_scope,
@@ -254,6 +278,13 @@ pub async fn read_dir<R: Runtime>(
     path: SafeFilePath,
     options: Option<BaseOptions>,
 ) -> CommandResult<Vec<DirEntry>> {
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
+        return webview.fs().saf_read_dir(base_uri, relative_path)
+            .map_err(|e| CommandError::from(format!("SAF read_dir failed: {e}")));
+    }
+    
     resolve_dir(
         &webview, 
         &global_scope, 
@@ -307,6 +338,14 @@ pub async fn read_file<R: Runtime>(
     path: SafeFilePath,
     options: Option<BaseOptions>,
 ) -> CommandResult<tauri::ipc::Response> {
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
+        let contents = webview.fs().saf_read_file(base_uri, relative_path)
+            .map_err(|e| CommandError::from(format!("SAF read_file failed: {e}")))?;
+        return Ok(tauri::ipc::Response::new(contents));
+    }
+    
     let (mut file, path) = resolve_file(
         &webview,
         &global_scope,
@@ -419,6 +458,13 @@ pub fn remove<R: Runtime>(
     path: SafeFilePath,
     options: Option<RemoveOptions>,
 ) -> CommandResult<()> {
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
+        return webview.fs().saf_remove(base_uri, relative_path)
+            .map_err(|e| CommandError::from(format!("SAF remove failed: {e}")));
+    }
+    
     let resolved_path = resolve_path(
         &webview,
         &global_scope,
@@ -488,6 +534,20 @@ pub fn rename<R: Runtime>(
     new_path: SafeFilePath,
     options: Option<RenameOptions>,
 ) -> CommandResult<()> {
+    // Check if this is an Android SAF content URI (both paths must be in the same SAF tree)
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, old_relative)) = old_path.extract_saf_parts() {
+        // Extract relative path from new_path
+        let new_relative = if let Some((_, rel)) = new_path.extract_saf_parts() {
+            rel
+        } else {
+            // If new_path is just a regular path, use it as the relative path
+            new_path.into_path()?.to_string_lossy().to_string()
+        };
+        return webview.fs().saf_rename(base_uri, old_relative, new_relative)
+            .map_err(|e| CommandError::from(format!("SAF rename failed: {e}")));
+    }
+    
     let resolved_old_path = resolve_path(
         &webview,
         &global_scope,
@@ -635,6 +695,35 @@ pub fn stat<R: Runtime>(
     path: SafeFilePath,
     options: Option<BaseOptions>,
 ) -> CommandResult<FileInfo> {
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
+        let stat_result = webview.fs().saf_stat(base_uri, relative_path)
+            .map_err(|e| CommandError::from(format!("SAF stat failed: {e}")))?;
+        
+        // Convert SAF stat response to FileInfo
+        return Ok(FileInfo {
+            is_file: stat_result.is_file,
+            is_directory: stat_result.is_directory,
+            is_symlink: false,
+            size: stat_result.size,
+            mtime: stat_result.mtime,
+            atime: None,
+            birthtime: None,
+            readonly: false, // SAF doesn't expose this easily
+            mode: None,
+            uid: None,
+            gid: None,
+            blksize: None,
+            blocks: None,
+            dev: None,
+            ino: None,
+            rdev: None,
+            nlink: None,
+            file_attribues: None,
+        });
+    }
+    
     let metadata = get_metadata(
         |p| std::fs::metadata(p),
         &webview,
@@ -785,6 +874,15 @@ pub async fn write_file<R: Runtime>(
         .and_then(|p| p.to_str().ok())
         .and_then(|opts| serde_json::from_str(opts).ok());
 
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
+        let append = options.as_ref().map(|o| o.append).unwrap_or(false);
+        let create = options.as_ref().map(|o| o.create).unwrap_or(true);
+        return webview.fs().saf_write_file(base_uri, relative_path, &data, append, create)
+            .map_err(|e| CommandError::from(format!("SAF write_file failed: {e}")));
+    }
+
     let (mut file, path) = resolve_file(
         &webview,
         &global_scope,
@@ -850,6 +948,13 @@ pub fn exists<R: Runtime>(
     path: SafeFilePath,
     options: Option<BaseOptions>,
 ) -> CommandResult<bool> {
+    // Check if this is an Android SAF content URI
+    #[cfg(target_os = "android")]
+    if let Some((base_uri, relative_path)) = path.extract_saf_parts() {
+        return webview.fs().saf_exists(base_uri, relative_path)
+            .map_err(|e| CommandError::from(format!("SAF exists failed: {e}")));
+    }
+    
     let resolved_path = resolve_path(
         &webview,
         &global_scope,

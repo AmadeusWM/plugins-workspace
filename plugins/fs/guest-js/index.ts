@@ -75,6 +75,69 @@
 import { BaseDirectory } from '@tauri-apps/api/path'
 import { Channel, invoke, Resource } from '@tauri-apps/api/core'
 
+/**
+ * A base directory path or a Content URI string (for Android SAF).
+ * 
+ * On Android, when using Storage Access Framework, pass the content:// URI
+ * returned from the dialog picker as the baseDir.
+ * 
+ * @since 2.0.0
+ */
+type BaseDir = BaseDirectory | string
+
+/**
+ * Helper to check if a value is a Content URI string (for Android SAF)
+ */
+function isContentUri(value: BaseDir | undefined): value is string {
+  return typeof value === 'string' && value.startsWith('content://')
+}
+
+/**
+ * Combines a Content URI base with a relative path for Android SAF.
+ * The relative path is appended as a query parameter that the Rust side will parse.
+ * 
+ * @internal
+ */
+function combineSafPath(baseUri: string, relativePath: string): string {
+  // Normalize the relative path (remove leading slashes)
+  const normalizedPath = relativePath.replace(/^\/+/, '')
+  
+  // Encode the relative path and append it to the content URI
+  // We use a custom format: content://...#safPath=relative/path
+  // The Rust side will parse this to extract both parts
+  if (normalizedPath) {
+    return `${baseUri}#safPath=${encodeURIComponent(normalizedPath)}`
+  }
+  return baseUri
+}
+
+/**
+ * Resolves the path based on options. If baseDir is a content URI,
+ * combines it with the path into a single SAF path.
+ * 
+ * @internal
+ */
+function resolvePath(
+  path: string | URL, 
+  baseDir?: BaseDir
+): { path: string; options: { baseDir?: BaseDirectory } } {
+  const pathStr = path instanceof URL ? path.toString() : path
+  
+  if (isContentUri(baseDir)) {
+    // For SAF: combine content URI with relative path, don't pass baseDir
+    return {
+      path: combineSafPath(baseDir, pathStr),
+      options: {}
+    }
+  }
+  
+  // For regular paths: pass as-is with baseDir
+  return {
+    path: pathStr,
+    options: baseDir !== undefined ? { baseDir: baseDir as BaseDirectory } : {}
+  }
+}
+
 enum SeekMode {
   Start = 0,
   Current = 1,
@@ -459,8 +522,11 @@ class FileHandle extends Resource {
  * @since 2.0.0
  */
 interface CreateOptions {
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -485,9 +551,12 @@ async function create(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   const rid = await invoke<number>('plugin:fs|create', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 
   return new FileHandle(rid)
@@ -542,8 +611,11 @@ interface OpenOptions {
    * Ignored on Windows.
    */
   mode?: number
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -570,9 +642,12 @@ async function open(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   const rid = await invoke<number>('plugin:fs|open', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 
   return new FileHandle(rid)
@@ -582,10 +657,16 @@ async function open(
  * @since 2.0.0
  */
 interface CopyFileOptions {
-  /** Base directory for `fromPath`. */
-  fromPathBaseDir?: BaseDirectory
-  /** Base directory for `toPath`. */
-  toPathBaseDir?: BaseDirectory
+  /** 
+   * Base directory for `fromPath`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  fromPathBaseDir?: BaseDir
+  /** 
+   * Base directory for `toPath`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  toPathBaseDir?: BaseDir
 }
 
 /**
@@ -610,10 +691,16 @@ async function copyFile(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolvedFrom = resolvePath(fromPath, options?.fromPathBaseDir)
+  const resolvedTo = resolvePath(toPath, options?.toPathBaseDir)
+  
   await invoke('plugin:fs|copy_file', {
-    fromPath: fromPath instanceof URL ? fromPath.toString() : fromPath,
-    toPath: toPath instanceof URL ? toPath.toString() : toPath,
-    options
+    fromPath: resolvedFrom.path,
+    toPath: resolvedTo.path,
+    options: {
+      fromPathBaseDir: resolvedFrom.options.baseDir,
+      toPathBaseDir: resolvedTo.options.baseDir
+    }
   })
 }
 
@@ -627,8 +714,11 @@ interface MkdirOptions {
    * Defaults to `false`. If set to `true`, means that any intermediate directories will also be created (as with the shell command `mkdir -p`).
    * */
   recursive?: boolean
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -649,9 +739,12 @@ async function mkdir(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   await invoke('plugin:fs|mkdir', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 }
 
@@ -659,8 +752,11 @@ async function mkdir(
  * @since 2.0.0
  */
 interface ReadDirOptions {
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -711,9 +807,12 @@ async function readDir(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   return await invoke('plugin:fs|read_dir', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 }
 
@@ -721,8 +820,11 @@ async function readDir(
  * @since 2.0.0
  */
 interface ReadFileOptions {
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -744,9 +846,12 @@ async function readFile(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   const arr = await invoke<ArrayBuffer | number[]>('plugin:fs|read_file', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 
   return arr instanceof ArrayBuffer ? new Uint8Array(arr) : Uint8Array.from(arr)
@@ -770,9 +875,12 @@ async function readTextFile(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   const arr = await invoke<ArrayBuffer | number[]>('plugin:fs|read_text_file', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 
   const bytes = arr instanceof ArrayBuffer ? arr : Uint8Array.from(arr)
@@ -803,7 +911,11 @@ async function readTextFileLines(
     throw new TypeError('Must be a file URL.')
   }
 
-  const pathStr = path instanceof URL ? path.toString() : path
+  const resolved = resolvePath(path, options?.baseDir)
+  const pathStr = resolved.path
+  const resolvedOptions = { ...options, 
+    baseDir: resolved.options.baseDir
+   }
 
   return await Promise.resolve({
     path: pathStr,
@@ -813,7 +925,7 @@ async function readTextFileLines(
       if (this.rid === null) {
         this.rid = await invoke<number>('plugin:fs|read_text_file_lines', {
           path: pathStr,
-          options
+          options: resolvedOptions
         })
       }
 
@@ -858,8 +970,11 @@ async function readTextFileLines(
 interface RemoveOptions {
   /** Defaults to `false`. If set to `true`, path will be removed even if it's a non-empty directory. */
   recursive?: boolean
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -882,9 +997,12 @@ async function remove(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   await invoke('plugin:fs|remove', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 }
 
@@ -892,10 +1010,16 @@ async function remove(
  * @since 2.0.0
  */
 interface RenameOptions {
-  /** Base directory for `oldPath`. */
-  oldPathBaseDir?: BaseDirectory
-  /** Base directory for `newPath`. */
-  newPathBaseDir?: BaseDirectory
+  /** 
+   * Base directory for `oldPath`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  oldPathBaseDir?: BaseDir
+  /** 
+   * Base directory for `newPath`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  newPathBaseDir?: BaseDir
 }
 
 /**
@@ -925,10 +1049,16 @@ async function rename(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolvedOld = resolvePath(oldPath, options?.oldPathBaseDir)
+  const resolvedNew = resolvePath(newPath, options?.newPathBaseDir)
+  
   await invoke('plugin:fs|rename', {
-    oldPath: oldPath instanceof URL ? oldPath.toString() : oldPath,
-    newPath: newPath instanceof URL ? newPath.toString() : newPath,
-    options
+    oldPath: resolvedOld.path,
+    newPath: resolvedNew.path,
+    options: {
+      oldPathBaseDir: resolvedOld.options.baseDir,
+      newPathBaseDir: resolvedNew.options.baseDir
+    }
   })
 }
 
@@ -936,8 +1066,11 @@ async function rename(
  * @since 2.0.0
  */
 interface StatOptions {
-  /** Base directory for `path`. */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -957,9 +1090,14 @@ async function stat(
   path: string | URL,
   options?: StatOptions
 ): Promise<FileInfo> {
+  const resolved = resolvePath(path, options?.baseDir)
+  console.debug("resolved",)
   const res = await invoke<UnparsedFileInfo>('plugin:fs|stat', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { 
+      ...options, 
+      baseDir: resolved.options.baseDir
+    }
   })
 
   return parseFileInfo(res)
@@ -983,9 +1121,13 @@ async function lstat(
   path: string | URL,
   options?: StatOptions
 ): Promise<FileInfo> {
+  const resolved = resolvePath(path, options?.baseDir)
   const res = await invoke<UnparsedFileInfo>('plugin:fs|lstat', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { 
+      ...options,
+      baseDir: resolved.options.baseDir
+    }
   })
 
   return parseFileInfo(res)
@@ -995,8 +1137,11 @@ async function lstat(
  * @since 2.0.0
  */
 interface TruncateOptions {
-  /** Base directory for `path`. */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -1028,10 +1173,13 @@ async function truncate(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   await invoke('plugin:fs|truncate', {
-    path: path instanceof URL ? path.toString() : path,
+    path: resolved.path,
     len,
-    options
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 }
 
@@ -1047,8 +1195,11 @@ interface WriteFileOptions {
   createNew?: boolean
   /** File permissions. Ignored on Windows. */
   mode?: number
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -1073,8 +1224,13 @@ async function writeFile(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
+  const resolvedOptions = { ...options, 
+    baseDir: resolved.options.baseDir
+   }
+
   if (data instanceof ReadableStream) {
-    const file = await open(path, { create: true, ...options })
+    const file = await open(resolved.path, { create: true, ...resolvedOptions })
     const reader = data.getReader()
 
     try {
@@ -1090,8 +1246,8 @@ async function writeFile(
   } else {
     await invoke('plugin:fs|write_file', data, {
       headers: {
-        path: encodeURIComponent(path instanceof URL ? path.toString() : path),
-        options: JSON.stringify(options)
+        path: encodeURIComponent(resolved.path),
+        options: JSON.stringify(resolvedOptions)
       }
     })
   }
@@ -1117,12 +1273,16 @@ async function writeTextFile(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
+  const resolvedOptions = { ...options, 
+    baseDir: resolved.options.baseDir
+   }
   const encoder = new TextEncoder()
 
   await invoke('plugin:fs|write_text_file', encoder.encode(data), {
     headers: {
-      path: encodeURIComponent(path instanceof URL ? path.toString() : path),
-      options: JSON.stringify(options)
+      path: encodeURIComponent(resolved.path),
+      options: JSON.stringify(resolvedOptions)
     }
   })
 }
@@ -1131,8 +1291,11 @@ async function writeTextFile(
  * @since 2.0.0
  */
 interface ExistsOptions {
-  /** Base directory for `path`. */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -1154,9 +1317,12 @@ async function exists(
     throw new TypeError('Must be a file URL.')
   }
 
+  const resolved = resolvePath(path, options?.baseDir)
   return await invoke('plugin:fs|exists', {
-    path: path instanceof URL ? path.toString() : path,
-    options
+    path: resolved.path,
+    options: { ...options, 
+      baseDir: resolved.options.baseDir
+     }
   })
 }
 
@@ -1166,8 +1332,11 @@ async function exists(
 interface WatchOptions {
   /** Watch a directory recursively */
   recursive?: boolean
-  /** Base directory for `path` */
-  baseDir?: BaseDirectory
+  /** 
+   * Base directory for `path`.
+   * On Android, can also be a Content URI string from dialog.open() for SAF support.
+   */
+  baseDir?: BaseDir
 }
 
 /**
@@ -1269,9 +1438,20 @@ async function watchInternal(
   const onEvent = new Channel<WatchEvent>()
   onEvent.onmessage = cb
 
+  // Resolve each path, handling SAF content URIs if baseDir is provided
+  const resolvedPaths = watchPaths.map((p) => {
+    const resolved = resolvePath(p, options?.baseDir)
+    return resolved.path
+  })
+  
+  // Remove baseDir from options if it was a content URI (already resolved into path)
+  const resolvedOptions = isContentUri(options?.baseDir)
+    ? { ...options, baseDir: undefined }
+    : options
+
   const rid: number = await invoke('plugin:fs|watch', {
-    paths: watchPaths.map((p) => (p instanceof URL ? p.toString() : p)),
-    options,
+    paths: resolvedPaths,
+    options: resolvedOptions,
     onEvent
   })
 
@@ -1342,6 +1522,7 @@ async function size(path: string | URL): Promise<number> {
 }
 
 export type {
+  BaseDir,
   CreateOptions,
   OpenOptions,
   CopyFileOptions,
@@ -1389,5 +1570,8 @@ export {
   exists,
   watch,
   watchImmediate,
-  size
+  size,
+  isContentUri,
+  combineSafPath,
+  resolvePath
 }

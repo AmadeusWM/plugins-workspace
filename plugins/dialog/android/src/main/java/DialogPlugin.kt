@@ -168,18 +168,31 @@ class DialogPlugin(private val activity: Activity): Plugin(activity) {
       return callResult
     }
     val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
     val uris: MutableList<String?> = ArrayList()
     if (data.clipData == null) {
       val uri: Uri? = data.data
-      if (uri !== null) {
-        val fsPath = FilePickerUtils.getPathFromUri(activity, uri)
-        uris.add(fsPath)
+      // Persist permission across device reboots for SAF
+      uri?.let {
+        try {
+          activity.contentResolver.takePersistableUriPermission(it, takeFlags)
+        } catch (e: SecurityException) {
+          // Permission might not be persistable, continue anyway
+          Logger.warn("Could not persist URI permission: ${e.message}")
+        }
       }
+      uris.add(uri?.toString())
     } else {
       for (i in 0 until data.clipData!!.itemCount) {
         val uri: Uri = data.clipData!!.getItemAt(i).uri
-        val fsPath = FilePickerUtils.getPathFromUri(activity, uri)
-        uris.add(fsPath)
+        // Persist permission across device reboots for SAF
+        try {
+          activity.contentResolver.takePersistableUriPermission(uri, takeFlags)
+        } catch (e: SecurityException) {
+          // Permission might not be persistable, continue anyway
+          Logger.warn("Could not persist URI permission: ${e.message}")
+        }
+        uris.add(uri.toString())
       }
     }
     callResult.put("folders", JSArray.from(uris.toTypedArray()))
