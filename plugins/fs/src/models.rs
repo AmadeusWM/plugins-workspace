@@ -16,3 +16,23 @@ pub struct GetFileDescriptorPayload {
 pub struct GetFileDescriptorResponse {
     pub fd: Option<i32>,
 }
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadDirPayload {
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadDirEntry {
+    pub name: String,
+    pub is_directory: bool,
+    pub is_file: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadDirResponse {
+    pub entries: Vec<ReadDirEntry>
+}

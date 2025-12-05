@@ -22,7 +22,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{scope::Entry, Error, SafeFilePath};
+use crate::{scope::Entry, Error, FsExt, SafeFilePath};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
@@ -259,46 +259,13 @@ pub async fn read_dir<R: Runtime>(
     path: SafeFilePath,
     options: Option<BaseOptions>,
 ) -> CommandResult<Vec<DirEntry>> {
-    let resolved_path = resolve_path(
-        "read-dir",
-        &webview,
-        &global_scope,
-        &command_scope,
-        path,
-        options.as_ref().and_then(|o| o.base_dir),
-    )?;
-
-    let entries = std::fs::read_dir(&resolved_path).map_err(|e| {
-        format!(
-            "failed to read directory at path: {} with error: {e}",
-            resolved_path.display()
-        )
-    })?;
-
-    let entries = entries
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let name = entry.file_name().into_string().ok()?;
-            let metadata = entry.file_type();
-            macro_rules! method_or_false {
-                ($method:ident) => {
-                    if let Ok(metadata) = &metadata {
-                        metadata.$method()
-                    } else {
-                        false
-                    }
-                };
-            }
-            Some(DirEntry {
-                name,
-                is_file: method_or_false!(is_file),
-                is_directory: method_or_false!(is_dir),
-                is_symlink: method_or_false!(is_symlink),
-            })
-        })
-        .collect();
-
-    Ok(entries)
+    resolve_dir(
+        &webview, 
+        &global_scope, 
+        &command_scope, 
+        path, 
+        options.as_ref().and_then(|o| o.base_dir)
+    )
 }
 
 #[tauri::command]
@@ -1086,6 +1053,86 @@ pub fn resolve_file<R: Runtime>(
         ),
     }
 }
+
+#[cfg(not(target_os = "android"))]
+pub fn resolve_dir<R: Runtime>(
+    webview: &Webview<R>,
+    global_scope: &GlobalScope<Entry>,
+    command_scope: &CommandScope<Entry>,
+    path: SafeFilePath,
+    base_dir: Option<BaseDirectory>,
+) -> CommandResult<Vec<DirEntry>> {
+    resolve_dir_path(webview, global_scope, command_scope, path, base_dir)
+}
+
+#[cfg(target_os = "android")]
+pub fn resolve_dir<R: Runtime>(
+    webview: &Webview<R>,
+    global_scope: &GlobalScope<Entry>,
+    command_scope: &CommandScope<Entry>,
+    path: SafeFilePath,
+    base_dir: Option<BaseDirectory>,
+) -> CommandResult<Vec<DirEntry>> {
+    match path {
+        SafeFilePath::Url(url) => {
+            Ok(
+                webview
+                    .fs()
+                    .resolve_content_uri_dir(url.to_string())?
+            )
+        }
+        SafeFilePath::Path(p) => resolve_dir_path(webview, global_scope, command_scope, SafeFilePath::Path(p), base_dir),
+    }
+}
+
+pub fn resolve_dir_path<R: Runtime>(
+    webview: &Webview<R>,
+    global_scope: &GlobalScope<Entry>,
+    command_scope: &CommandScope<Entry>,
+    path: SafeFilePath,
+    base_dir: Option<BaseDirectory>,
+) -> CommandResult<Vec<DirEntry>> {
+    let resolved_path = resolve_path(
+        "read-dir",
+        &webview,
+        &global_scope,
+        &command_scope,
+        path,
+        base_dir
+    )?;
+
+    let entries = std::fs::read_dir(&resolved_path).map_err(|e| {
+        format!(
+            "failed to read directory at path: {} with error: {e}",
+            resolved_path.display()
+        )
+    })?;
+
+    let entries = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            let metadata = entry.file_type();
+            macro_rules! method_or_false {
+                ($method:ident) => {
+                    if let Ok(metadata) = &metadata {
+                        metadata.$method()
+                    } else {
+                        false
+                    }
+                };
+            }
+            Some(DirEntry {
+                name,
+                is_file: method_or_false!(is_file),
+                is_directory: method_or_false!(is_dir),
+                is_symlink: method_or_false!(is_symlink),
+            })
+        })
+        .collect();
+    Ok(entries)
+}
+
 
 pub fn resolve_path<R: Runtime>(
     permission: &str,
