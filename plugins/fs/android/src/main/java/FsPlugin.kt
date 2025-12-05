@@ -405,7 +405,7 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
                 outputStream?.use { stream ->
                     val data = Base64.decode(args.data, Base64.NO_WRAP)
                     stream.write(data)
-                    invoke.resolve()
+                    invoke.resolve(JSObject())
                 } ?: invoke.reject("Failed to open output stream")
             } else if (args.create) {
                 // File doesn't exist, create it
@@ -420,7 +420,7 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
                 outputStream?.use { stream ->
                     val data = Base64.decode(args.data, Base64.NO_WRAP)
                     stream.write(data)
-                    invoke.resolve()
+                    invoke.resolve(JSObject())
                 } ?: invoke.reject("Failed to open output stream for new file")
             } else {
                 invoke.reject("File not found and create is false")
@@ -500,7 +500,7 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
             val deleted = DocumentsContract.deleteDocument(activity.contentResolver, documentUri)
             
             if (deleted) {
-                invoke.resolve()
+                invoke.resolve(JSObject())
             } else {
                 invoke.reject("Failed to delete document")
             }
@@ -730,7 +730,7 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         contentObservers[args.watcherId]?.let { observer ->
             activity.contentResolver.unregisterContentObserver(observer)
             contentObservers.remove(args.watcherId)
-            invoke.resolve()
+            invoke.resolve(JSObject())
         } ?: invoke.reject("Watcher not found")
     }
 }
