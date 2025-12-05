@@ -8,7 +8,9 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.res.AssetManager.ACCESS_BUFFER
+import android.database.ContentObserver
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
@@ -679,12 +681,14 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
      * Data class to hold watcher state
      */
     private data class WatcherState(
-        val timer: Timer,
+        val timer: Timer?,
+        val contentObserver: ContentObserver?,
         val treeUri: Uri,
         val path: String,
         val recursive: Boolean,
         val channel: Channel,
-        var lastSnapshot: Map<String, FileState>
+        var lastSnapshot: Map<String, FileState>,
+        var contentObserverTriggered: Boolean = false
     )
     
     private val watchers = mutableMapOf<Int, WatcherState>()
@@ -828,53 +832,194 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         return resolveDocumentUri(treeUri, fullPath).toString()
     }
     
+    /**
+     * Process changes detected either by ContentObserver or polling
+     */
+    private fun processChanges(id: Int, source: String) {
+        val currentWatcher = watchers[id] ?: return
+        
+        android.util.Log.d("FsPlugin", "[$source] Processing changes for watcherId: $id")
+        
+        val newSnapshot = takeDirectorySnapshot(currentWatcher.treeUri, currentWatcher.path, currentWatcher.recursive)
+        
+        if (newSnapshot != currentWatcher.lastSnapshot) {
+            android.util.Log.d("FsPlugin", "[$source] Changes detected! Old: ${currentWatcher.lastSnapshot.keys}, New: ${newSnapshot.keys}")
+            compareSnapshots(id, currentWatcher.lastSnapshot, newSnapshot, currentWatcher.treeUri, currentWatcher.path, currentWatcher.channel)
+            
+            // Update the snapshot
+            watchers[id] = currentWatcher.copy(lastSnapshot = newSnapshot)
+        } else {
+            android.util.Log.d("FsPlugin", "[$source] No actual changes in snapshot")
+        }
+    }
+    
     @Command
     fun safWatch(invoke: Invoke) {
         val args = invoke.parseArgs(SafWatchArgs::class.java)
         
-        val treeUri = args.baseUri.toUri()
+        android.util.Log.d("FsPlugin", "========== safWatch START ==========")
+        android.util.Log.d("FsPlugin", "safWatch: baseUri=${args.baseUri}")
+        android.util.Log.d("FsPlugin", "safWatch: path=${args.path}")
+        android.util.Log.d("FsPlugin", "safWatch: recursive=${args.recursive}")
         
-        val documentUri = resolveDocumentUri(treeUri, args.path)
+        val treeUri = args.baseUri.toUri()
+        android.util.Log.d("FsPlugin", "safWatch: parsed treeUri=$treeUri")
+        android.util.Log.d("FsPlugin", "safWatch: treeUri.scheme=${treeUri.scheme}")
+        android.util.Log.d("FsPlugin", "safWatch: treeUri.authority=${treeUri.authority}")
+        
+        // Get the document URI for the watched path
+        val normalizedPath = args.path.trim().let { 
+            if (it == "." || it == "/" || it.isEmpty()) "" else it.trimStart('/') 
+        }
+        val documentUri = resolveDocumentUri(treeUri, normalizedPath)
+        android.util.Log.d("FsPlugin", "safWatch: documentUri=$documentUri")
+        
+        // Also try children URI for directory watching
+        val childrenUri = resolveChildDocumentsUri(treeUri, normalizedPath)
+        android.util.Log.d("FsPlugin", "safWatch: childrenUri=$childrenUri")
         
         val id = watcherId++
+        android.util.Log.d("FsPlugin", "safWatch: assigned watcherId=$id")
         
         // Take initial snapshot
         val initialSnapshot = takeDirectorySnapshot(treeUri, args.path, args.recursive)
+        android.util.Log.d("FsPlugin", "safWatch: initial snapshot has ${initialSnapshot.size} entries: ${initialSnapshot.keys}")
         
-        // Create timer for polling
+        // Create ContentObserver with extensive debugging
+        val handler = Handler(Looper.getMainLooper())
+        val observer = object : ContentObserver(handler) {
+            
+            override fun deliverSelfNotifications(): Boolean {
+                android.util.Log.d("FsPlugin", "[ContentObserver-$id] deliverSelfNotifications called, returning true")
+                return true
+            }
+            
+            override fun onChange(selfChange: Boolean) {
+                android.util.Log.d("FsPlugin", "[ContentObserver-$id] *** onChange(selfChange=$selfChange) TRIGGERED ***")
+                onChange(selfChange, null)
+            }
+            
+            override fun onChange(selfChange: Boolean, uri: Uri?) {
+                android.util.Log.d("FsPlugin", "[ContentObserver-$id] *** onChange(selfChange=$selfChange, uri=$uri) TRIGGERED ***")
+                
+                // Mark that ContentObserver is working
+                watchers[id]?.let { 
+                    if (!it.contentObserverTriggered) {
+                        android.util.Log.d("FsPlugin", "[ContentObserver-$id] First ContentObserver trigger! It's working!")
+                        watchers[id] = it.copy(contentObserverTriggered = true)
+                    }
+                }
+                
+                // Process changes
+                processChanges(id, "ContentObserver")
+            }
+            
+            override fun onChange(selfChange: Boolean, uri: Uri?, flags: Int) {
+                android.util.Log.d("FsPlugin", "[ContentObserver-$id] *** onChange(selfChange=$selfChange, uri=$uri, flags=$flags) TRIGGERED ***")
+                
+                // Decode flags
+                val flagDescriptions = mutableListOf<String>()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (flags and 1 != 0) flagDescriptions.add("NOTIFY_SYNC_TO_NETWORK")
+                    if (flags and 2 != 0) flagDescriptions.add("NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS")
+                    if (flags and 4 != 0) flagDescriptions.add("NOTIFY_INSERT")
+                    if (flags and 8 != 0) flagDescriptions.add("NOTIFY_UPDATE")
+                    if (flags and 16 != 0) flagDescriptions.add("NOTIFY_DELETE")
+                }
+                android.util.Log.d("FsPlugin", "[ContentObserver-$id] Flags decoded: $flagDescriptions")
+                
+                // Mark that ContentObserver is working
+                watchers[id]?.let { 
+                    if (!it.contentObserverTriggered) {
+                        android.util.Log.d("FsPlugin", "[ContentObserver-$id] First ContentObserver trigger! It's working!")
+                        watchers[id] = it.copy(contentObserverTriggered = true)
+                    }
+                }
+                
+                // Process changes
+                processChanges(id, "ContentObserver")
+            }
+        }
+        
+        // Register ContentObserver on multiple URIs to maximize chances of receiving notifications
+        android.util.Log.d("FsPlugin", "safWatch: Registering ContentObserver...")
+        
+        // Try registering on the document URI
+        try {
+            android.util.Log.d("FsPlugin", "safWatch: Registering observer on documentUri: $documentUri (notifyForDescendants=${args.recursive})")
+            activity.contentResolver.registerContentObserver(
+                documentUri,
+                args.recursive,  // notifyForDescendants
+                observer
+            )
+            android.util.Log.d("FsPlugin", "safWatch: Successfully registered on documentUri")
+        } catch (e: Exception) {
+            android.util.Log.e("FsPlugin", "safWatch: Failed to register on documentUri: ${e.message}", e)
+        }
+        
+        // Also try registering on the children URI (for directory contents)
+        try {
+            android.util.Log.d("FsPlugin", "safWatch: Registering observer on childrenUri: $childrenUri (notifyForDescendants=${args.recursive})")
+            activity.contentResolver.registerContentObserver(
+                childrenUri,
+                args.recursive,
+                observer
+            )
+            android.util.Log.d("FsPlugin", "safWatch: Successfully registered on childrenUri")
+        } catch (e: Exception) {
+            android.util.Log.e("FsPlugin", "safWatch: Failed to register on childrenUri: ${e.message}", e)
+        }
+        
+        // Also try registering on the tree URI itself
+        try {
+            android.util.Log.d("FsPlugin", "safWatch: Registering observer on treeUri: $treeUri (notifyForDescendants=true)")
+            activity.contentResolver.registerContentObserver(
+                treeUri,
+                true,
+                observer
+            )
+            android.util.Log.d("FsPlugin", "safWatch: Successfully registered on treeUri")
+        } catch (e: Exception) {
+            android.util.Log.e("FsPlugin", "safWatch: Failed to register on treeUri: ${e.message}", e)
+        }
+        
+        // Create timer for polling as fallback
         val timer = Timer("SafWatcher-$id", true)
+        android.util.Log.d("FsPlugin", "safWatch: Created polling timer")
         
         val watcherState = WatcherState(
             timer = timer,
+            contentObserver = observer,
             treeUri = treeUri,
             path = args.path,
             recursive = args.recursive,
             channel = args.onEvent,
-            lastSnapshot = initialSnapshot
+            lastSnapshot = initialSnapshot,
+            contentObserverTriggered = false
         )
         
         watchers[id] = watcherState
         
-        // Schedule polling task
+        // Schedule polling task as fallback
         timer.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
                 try {
                     val currentWatcher = watchers[id] ?: return
                     
-                    val newSnapshot = takeDirectorySnapshot(currentWatcher.treeUri, currentWatcher.path, currentWatcher.recursive)
-                    
-                    if (newSnapshot != currentWatcher.lastSnapshot) {
-                        compareSnapshots(id, currentWatcher.lastSnapshot, newSnapshot, currentWatcher.treeUri, currentWatcher.path, currentWatcher.channel)
-                        
-                        // Update the snapshot
-                        watchers[id] = currentWatcher.copy(lastSnapshot = newSnapshot)
+                    // Log whether ContentObserver has been triggered yet
+                    if (!currentWatcher.contentObserverTriggered) {
+                        android.util.Log.d("FsPlugin", "[Polling-$id] ContentObserver has NOT triggered yet, polling is the fallback")
                     }
+                    
+                    processChanges(id, "Polling")
                 } catch (e: Exception) {
-                    android.util.Log.e("FsPlugin", "Error in safWatch polling: ${e.message}")
+                    android.util.Log.e("FsPlugin", "[Polling-$id] Error: ${e.message}")
                 }
             }
         }, POLL_INTERVAL_MS, POLL_INTERVAL_MS)
         
+        android.util.Log.d("FsPlugin", "safWatch: Started polling with interval ${POLL_INTERVAL_MS}ms")
+        android.util.Log.d("FsPlugin", "========== safWatch COMPLETE, watcherId=$id ==========")
         
         val res = JSObject()
         res.put("watcherId", id)
@@ -885,8 +1030,26 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
     fun safUnwatch(invoke: Invoke) {
         val args = invoke.parseArgs(SafUnwatchArgs::class.java)
         
+        android.util.Log.d("FsPlugin", "safUnwatch: watcherId=${args.watcherId}")
+        
         watchers[args.watcherId]?.let { watcherState ->
-            watcherState.timer.cancel()
+            // Cancel timer
+            watcherState.timer?.cancel()
+            android.util.Log.d("FsPlugin", "safUnwatch: Cancelled timer")
+            
+            // Unregister ContentObserver
+            watcherState.contentObserver?.let { observer ->
+                try {
+                    activity.contentResolver.unregisterContentObserver(observer)
+                    android.util.Log.d("FsPlugin", "safUnwatch: Unregistered ContentObserver")
+                } catch (e: Exception) {
+                    android.util.Log.e("FsPlugin", "safUnwatch: Error unregistering ContentObserver: ${e.message}")
+                }
+            }
+            
+            // Log whether ContentObserver ever worked
+            android.util.Log.d("FsPlugin", "safUnwatch: ContentObserver triggered during watch: ${watcherState.contentObserverTriggered}")
+            
             watchers.remove(args.watcherId)
             invoke.resolve(JSObject())
         } ?: invoke.reject("Watcher not found")
