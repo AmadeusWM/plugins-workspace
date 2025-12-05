@@ -9,12 +9,10 @@ import android.app.Activity
 import android.content.Intent
 import android.content.res.AssetManager.ACCESS_BUFFER
 import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
-import android.database.ContentObserver
 import android.util.Base64
 import android.webkit.MimeTypeMap
 import androidx.core.net.toUri
@@ -34,6 +32,8 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.Timer
+import java.util.TimerTask
 
 @InvokeArg
 class WriteTextFileArgs {
@@ -665,58 +665,216 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
     
     // ===== File Watching =====
     
-    private val contentObservers = mutableMapOf<Int, ContentObserver>()
+    /**
+     * Data class to store file/directory state for comparison
+     */
+    private data class FileState(
+        val name: String,
+        val isDirectory: Boolean,
+        val lastModified: Long,
+        val size: Long
+    )
+    
+    /**
+     * Data class to hold watcher state
+     */
+    private data class WatcherState(
+        val timer: Timer,
+        val treeUri: Uri,
+        val path: String,
+        val recursive: Boolean,
+        val channel: Channel,
+        var lastSnapshot: Map<String, FileState>
+    )
+    
+    private val watchers = mutableMapOf<Int, WatcherState>()
     private var watcherId = 0
+    private val POLL_INTERVAL_MS = 2000L // Poll every 2 seconds
+    
+    /**
+     * Takes a snapshot of a directory's contents for comparison
+     */
+    private fun takeDirectorySnapshot(treeUri: Uri, path: String, recursive: Boolean): Map<String, FileState> {
+        val snapshot = mutableMapOf<String, FileState>()
+        
+        // Normalize path - treat ".", "", and "/" as root
+        val normalizedPath = path.trim().let { 
+            if (it == "." || it == "/" || it.isEmpty()) "" else it.trimStart('/') 
+        }
+        
+        
+        try {
+            val doc = if (normalizedPath.isEmpty()) {
+                DocumentFile.fromTreeUri(activity, treeUri)
+            } else {
+                navigateToDocument(treeUri, normalizedPath)
+            }
+            
+            if (doc == null) {
+                android.util.Log.e("FsPlugin", "takeDirectorySnapshot: doc is null!")
+                return snapshot
+            }
+            
+            if (!doc.exists()) {
+                android.util.Log.e("FsPlugin", "takeDirectorySnapshot: doc doesn't exist!")
+                return snapshot
+            }
+            
+            if (!doc.isDirectory) {
+                android.util.Log.e("FsPlugin", "takeDirectorySnapshot: doc is not a directory! isFile=${doc.isFile}")
+                return snapshot
+            }
+            
+            
+            scanDirectory(doc, "", recursive, snapshot)
+        } catch (e: Exception) {
+            android.util.Log.e("FsPlugin", "Error taking directory snapshot: ${e.message}", e)
+        }
+        
+        return snapshot
+    }
+    
+    /**
+     * Recursively scans a directory and adds entries to the snapshot
+     */
+    private fun scanDirectory(doc: DocumentFile, basePath: String, recursive: Boolean, snapshot: MutableMap<String, FileState>) {
+        val files = doc.listFiles()
+        
+        files.forEach { child ->
+            val childPath = if (basePath.isEmpty()) child.name ?: "" else "$basePath/${child.name ?: ""}"
+            val lastMod = child.lastModified()
+            val size = child.length()
+            
+            
+            snapshot[childPath] = FileState(
+                name = child.name ?: "",
+                isDirectory = child.isDirectory,
+                lastModified = lastMod,
+                size = size
+            )
+            
+            if (recursive && child.isDirectory) {
+                scanDirectory(child, childPath, true, snapshot)
+            }
+        }
+    }
+    
+    /**
+     * Compares two snapshots and emits change events
+     */
+    private fun compareSnapshots(
+        watcherId: Int,
+        oldSnapshot: Map<String, FileState>,
+        newSnapshot: Map<String, FileState>,
+        treeUri: Uri,
+        basePath: String,
+        channel: Channel
+    ) {
+        
+        val handler = Handler(Looper.getMainLooper())
+        
+        // Check for created files (in new but not in old)
+        for ((path, state) in newSnapshot) {
+            if (path !in oldSnapshot) {
+                handler.post {
+                    val event = JSObject()
+                    event.put("watcherId", watcherId)
+                    event.put("uri", buildDocumentUri(treeUri, basePath, path))
+                    event.put("selfChange", false)
+                    event.put("type", "create")
+                    event.put("path", path)
+                    channel.send(event)
+                }
+            }
+        }
+        
+        // Check for removed files (in old but not in new)
+        for ((path, state) in oldSnapshot) {
+            if (path !in newSnapshot) {
+                handler.post {
+                    val event = JSObject()
+                    event.put("watcherId", watcherId)
+                    event.put("uri", buildDocumentUri(treeUri, basePath, path))
+                    event.put("selfChange", false)
+                    event.put("type", "remove")
+                    event.put("path", path)
+                    channel.send(event)
+                }
+            }
+        }
+        
+        // Check for modified files (in both but changed)
+        for ((path, newState) in newSnapshot) {
+            val oldState = oldSnapshot[path]
+            if (oldState != null && (oldState.lastModified != newState.lastModified || oldState.size != newState.size)) {
+                handler.post {
+                    val event = JSObject()
+                    event.put("watcherId", watcherId)
+                    event.put("uri", buildDocumentUri(treeUri, basePath, path))
+                    event.put("selfChange", false)
+                    event.put("type", "modify")
+                    event.put("path", path)
+                    channel.send(event)
+                }
+            }
+        }
+    }
+    
+    /**
+     * Builds a document URI string for a given path
+     */
+    private fun buildDocumentUri(treeUri: Uri, basePath: String, relativePath: String): String {
+        val fullPath = if (basePath.isEmpty()) relativePath else "$basePath/$relativePath"
+        return resolveDocumentUri(treeUri, fullPath).toString()
+    }
     
     @Command
     fun safWatch(invoke: Invoke) {
         val args = invoke.parseArgs(SafWatchArgs::class.java)
+        
         val treeUri = args.baseUri.toUri()
+        
         val documentUri = resolveDocumentUri(treeUri, args.path)
         
         val id = watcherId++
         
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
-                onChange(selfChange, null, 0)
-            }
-            
-            override fun onChange(selfChange: Boolean, uri: Uri?) {
-                onChange(selfChange, uri, 0)
-            }
-            
-            override fun onChange(selfChange: Boolean, uri: Uri?, flags: Int) {
-                super.onChange(selfChange, uri, flags)
-                
-                val event = JSObject()
-                event.put("watcherId", id)
-                event.put("uri", uri?.toString())
-                event.put("selfChange", selfChange)
-                
-                // Map Android flags to event types (API 30+)
-                val eventType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    when {
-                        flags and 4 != 0 -> "create"  // NOTIFY_INSERT
-                        flags and 16 != 0 -> "remove" // NOTIFY_DELETE
-                        flags and 8 != 0 -> "modify"  // NOTIFY_UPDATE
-                        else -> "unknown"
-                    }
-                } else {
-                    "modify" // On older APIs, we can't distinguish event types
-                }
-                event.put("type", eventType)
-                
-                args.onEvent.send(event)
-            }
-        }
+        // Take initial snapshot
+        val initialSnapshot = takeDirectorySnapshot(treeUri, args.path, args.recursive)
         
-        activity.contentResolver.registerContentObserver(
-            documentUri,
-            args.recursive,
-            observer
+        // Create timer for polling
+        val timer = Timer("SafWatcher-$id", true)
+        
+        val watcherState = WatcherState(
+            timer = timer,
+            treeUri = treeUri,
+            path = args.path,
+            recursive = args.recursive,
+            channel = args.onEvent,
+            lastSnapshot = initialSnapshot
         )
         
-        contentObservers[id] = observer
+        watchers[id] = watcherState
+        
+        // Schedule polling task
+        timer.scheduleAtFixedRate(object : TimerTask() {
+            override fun run() {
+                try {
+                    val currentWatcher = watchers[id] ?: return
+                    
+                    val newSnapshot = takeDirectorySnapshot(currentWatcher.treeUri, currentWatcher.path, currentWatcher.recursive)
+                    
+                    if (newSnapshot != currentWatcher.lastSnapshot) {
+                        compareSnapshots(id, currentWatcher.lastSnapshot, newSnapshot, currentWatcher.treeUri, currentWatcher.path, currentWatcher.channel)
+                        
+                        // Update the snapshot
+                        watchers[id] = currentWatcher.copy(lastSnapshot = newSnapshot)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("FsPlugin", "Error in safWatch polling: ${e.message}")
+                }
+            }
+        }, POLL_INTERVAL_MS, POLL_INTERVAL_MS)
+        
         
         val res = JSObject()
         res.put("watcherId", id)
@@ -727,9 +885,9 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
     fun safUnwatch(invoke: Invoke) {
         val args = invoke.parseArgs(SafUnwatchArgs::class.java)
         
-        contentObservers[args.watcherId]?.let { observer ->
-            activity.contentResolver.unregisterContentObserver(observer)
-            contentObservers.remove(args.watcherId)
+        watchers[args.watcherId]?.let { watcherState ->
+            watcherState.timer.cancel()
+            watchers.remove(args.watcherId)
             invoke.resolve(JSObject())
         } ?: invoke.reject("Watcher not found")
     }

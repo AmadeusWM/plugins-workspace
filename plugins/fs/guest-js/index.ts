@@ -1422,11 +1422,108 @@ type UnwatchFn = () => void
 
 class Watcher extends Resource {}
 
+/**
+ * SAF Watch event structure from Android polling watcher
+ */
+interface SafWatchEvent {
+  watcherId: number
+  uri: string | null
+  selfChange: boolean
+  type: 'create' | 'modify' | 'remove' | 'unknown'
+  path?: string // Relative path within the watched directory
+}
+
+/**
+ * Parses a SAF combined path into base URI and relative path
+ * @internal
+ */
+function parseSafPath(safPath: string): { baseUri: string; relativePath: string } {
+  const hashIndex = safPath.indexOf('#safPath=')
+  if (hashIndex === -1) {
+    return { baseUri: safPath, relativePath: '' }
+  }
+  const baseUri = safPath.substring(0, hashIndex)
+  const relativePath = decodeURIComponent(safPath.substring(hashIndex + '#safPath='.length))
+  return { baseUri, relativePath }
+}
+
+/**
+ * Watch a SAF path using Android polling-based watcher
+ * @internal
+ */
+async function watchSaf(
+  baseUri: string,
+  path: string,
+  recursive: boolean,
+  cb: (event: WatchEvent) => void
+): Promise<UnwatchFn> {
+  
+  // Normalize the watch path - if it's "." or empty, we're watching the root
+  const normalizedWatchPath = (path === '.' || path === '/' || path === '') ? '' : path.replace(/^\/+/, '')
+  
+  const onEvent = new Channel<SafWatchEvent>()
+  onEvent.onmessage = (safEvent) => {
+    
+    // Use the relative path from the event, combining with the watch base path if needed
+    let relativePath = safEvent.path || ''
+    if (normalizedWatchPath && relativePath) {
+      relativePath = `${normalizedWatchPath}/${relativePath}`
+    } else if (normalizedWatchPath) {
+      relativePath = normalizedWatchPath
+    }
+    
+    // Build the full SAF path for the event (baseUri#safPath=relativePath format)
+    const fullSafPath = relativePath 
+      ? `${baseUri}#safPath=${encodeURIComponent(relativePath)}`
+      : baseUri
+    
+    
+    // Convert SAF event to WatchEvent format
+    const watchEvent: WatchEvent = {
+      paths: [fullSafPath],
+      type: safEventToWatchEventType(safEvent.type),
+      attrs: {}
+    }
+    
+    cb(watchEvent)
+  }
+  
+  const response = await invoke<{ watcherId: number }>('plugin:fs|saf_watch', {
+    baseUri,
+    path,
+    recursive,
+    onEvent
+  })
+  
+  
+  return async () => {
+    await invoke('plugin:fs|saf_unwatch', { watcherId: response.watcherId })
+  }
+}
+
+/**
+ * Converts SAF event type to WatchEvent type
+ * @internal
+ */
+function safEventToWatchEventType(safType: SafWatchEvent['type']): WatchEventKind {
+  switch (safType) {
+    case 'create':
+      return { create: { kind: 'any' } }
+    case 'modify':
+      return { modify: { kind: 'any' } }
+    case 'remove':
+      return { remove: { kind: 'any' } }
+    default:
+      return 'other'
+  }
+}
+
 async function watchInternal(
   paths: string | string[] | URL | URL[],
   cb: (event: WatchEvent) => void,
   options: DebouncedWatchOptions
 ): Promise<UnwatchFn> {
+  
   const watchPaths = Array.isArray(paths) ? paths : [paths]
 
   for (const path of watchPaths) {
@@ -1435,8 +1532,36 @@ async function watchInternal(
     }
   }
 
+  // Check if any path is a SAF content URI
+  const isSafWatch = isContentUri(options?.baseDir) || 
+    watchPaths.some(p => typeof p === 'string' && p.startsWith('content://'))
+  
+  if (isSafWatch) {
+    
+    // For SAF, we need to set up individual watchers and combine their unwatch functions
+    const unwatchFns: UnwatchFn[] = []
+    
+    for (const watchPath of watchPaths) {
+      const pathStr = watchPath instanceof URL ? watchPath.toString() : watchPath
+      const resolved = resolvePath(pathStr, options?.baseDir)
+      
+      // Parse the combined SAF path
+      const { baseUri, relativePath } = parseSafPath(resolved.path)
+      
+      
+      const unwatch = await watchSaf(baseUri, relativePath, options?.recursive ?? false, cb)
+      unwatchFns.push(unwatch)
+    }
+    
+    return () => {
+      unwatchFns.forEach(fn => fn())
+    }
+  }
+
   const onEvent = new Channel<WatchEvent>()
-  onEvent.onmessage = cb
+  onEvent.onmessage = (event) => {
+    cb(event)
+  }
 
   // Resolve each path, handling SAF content URIs if baseDir is provided
   const resolvedPaths = watchPaths.map((p) => {
@@ -1449,12 +1574,14 @@ async function watchInternal(
     ? { ...options, baseDir: undefined }
     : options
 
+  
   const rid: number = await invoke('plugin:fs|watch', {
     paths: resolvedPaths,
     options: resolvedOptions,
     onEvent
   })
 
+  
   const watcher = new Watcher(rid)
 
   return () => {

@@ -104,6 +104,8 @@ const COMMANDS: &[(&str, &[&str])] = &[
     // TODO: Remove this in v3
     ("unwatch", &[]),
     ("size", &[]),
+    ("saf_watch", &[]),
+    ("saf_unwatch", &[]),
 ];
 
 fn main() {

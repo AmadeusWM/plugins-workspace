@@ -18,4 +18,6 @@ commands.allow = [
   "exists",
   "watch",
   "unwatch",
+  "saf_watch",
+  "saf_unwatch",
 ]

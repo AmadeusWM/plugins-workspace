@@ -1392,6 +1392,39 @@ fn get_stat(metadata: std::fs::Metadata) -> FileInfo {
     }
 }
 
+// ===== SAF Watch Commands (Android only) =====
+
+#[cfg(target_os = "android")]
+use crate::models::{SafWatchEvent, SafWatchResponse};
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub fn saf_watch<R: Runtime>(
+    webview: Webview<R>,
+    base_uri: String,
+    path: String,
+    recursive: bool,
+    on_event: tauri::ipc::Channel<SafWatchEvent>,
+) -> CommandResult<SafWatchResponse> {
+    let fs = webview.fs();
+    let watcher_id = fs.saf_watch(&base_uri, &path, recursive, on_event)?;
+    
+    Ok(SafWatchResponse { watcher_id })
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub fn saf_unwatch<R: Runtime>(
+    webview: Webview<R>,
+    watcher_id: i32,
+) -> CommandResult<()> {
+    
+    let fs = webview.fs();
+    fs.saf_unwatch(watcher_id)?;
+    
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use std::io::{BufRead, BufReader};

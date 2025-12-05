@@ -378,4 +378,52 @@ impl<R: Runtime> Fs<R> {
         
         Ok(result.exists)
     }
+
+    /// Watch a file or directory using SAF with base URI and relative path
+    #[cfg(target_os = "android")]
+    pub fn saf_watch(
+        &self,
+        base_uri: impl Into<String>,
+        path: impl Into<String>,
+        recursive: bool,
+        on_event: tauri::ipc::Channel<SafWatchEvent>,
+    ) -> std::io::Result<i32> {
+        let result = self.0.run_mobile_plugin::<SafWatchResponse>(
+            "safWatch",
+            SafWatchPayload {
+                base_uri: base_uri.into(),
+                path: path.into(),
+                recursive,
+                on_event,
+            },
+        ).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to watch: {e}")
+            )
+        })?;
+        
+        Ok(result.watcher_id)
+    }
+
+    /// Unwatch a SAF watcher
+    #[cfg(target_os = "android")]
+    pub fn saf_unwatch(
+        &self,
+        watcher_id: i32,
+    ) -> std::io::Result<()> {
+        self.0.run_mobile_plugin::<SafEmptyResponse>(
+            "safUnwatch",
+            SafUnwatchPayload {
+                watcher_id,
+            },
+        ).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to unwatch: {e}")
+            )
+        })?;
+        
+        Ok(())
+    }
 }

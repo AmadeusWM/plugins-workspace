@@ -3383,6 +3383,58 @@ Denies the rename command without any pre-configured scope.
 <tr>
 <td>
 
+`fs:allow-saf-unwatch`
+
+</td>
+<td>
+
+Enables the saf_unwatch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`fs:deny-saf-unwatch`
+
+</td>
+<td>
+
+Denies the saf_unwatch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`fs:allow-saf-watch`
+
+</td>
+<td>
+
+Enables the saf_watch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`fs:deny-saf-watch`
+
+</td>
+<td>
+
+Denies the saf_watch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `fs:allow-seek`
 
 </td>
