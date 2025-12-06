@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.util.Base64
+import java.util.concurrent.Executors
 import android.webkit.MimeTypeMap
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
@@ -135,6 +136,9 @@ class SafUnwatchArgs {
 
 @TauriPlugin
 class FsPlugin(private val activity: Activity): Plugin(activity) {
+    
+    // ExecutorService for background I/O operations
+    private val ioExecutor = Executors.newCachedThreadPool()
     
     // ===== SAF Helper Functions =====
     
@@ -323,50 +327,52 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafReadDirArgs::class.java)
         val treeUri = args.baseUri.toUri()
         
-        try {
-            val childrenUri = resolveChildDocumentsUri(treeUri, args.path)
-            
-            val projection = arrayOf(
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_SIZE,
-                DocumentsContract.Document.COLUMN_LAST_MODIFIED
-            )
-            
-            val cursor = activity.contentResolver.query(
-                childrenUri,
-                projection,
-                null,
-                null,
-                null
-            )
-            
-            val entries = JSONArray()
-            cursor?.use {
-                while (it.moveToNext()) {
-                    val entry = JSObject()
-                    val displayName = it.getString(
-                        it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                    )
-                    val mimeType = it.getString(
-                        it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                    )
-                    
-                    entry.put("name", displayName)
-                    entry.put("isDirectory", mimeType == DocumentsContract.Document.MIME_TYPE_DIR)
-                    entry.put("isFile", mimeType != DocumentsContract.Document.MIME_TYPE_DIR)
-                    entry.put("isSymlink", false)
-                    
-                    entries.put(entry)
+        ioExecutor.execute {
+            try {
+                val childrenUri = resolveChildDocumentsUri(treeUri, args.path)
+                
+                val projection = arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE,
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED
+                )
+                
+                val cursor = activity.contentResolver.query(
+                    childrenUri,
+                    projection,
+                    null,
+                    null,
+                    null
+                )
+                
+                val entries = JSONArray()
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        val entry = JSObject()
+                        val displayName = it.getString(
+                            it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                        )
+                        val mimeType = it.getString(
+                            it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                        )
+                        
+                        entry.put("name", displayName)
+                        entry.put("isDirectory", mimeType == DocumentsContract.Document.MIME_TYPE_DIR)
+                        entry.put("isFile", mimeType != DocumentsContract.Document.MIME_TYPE_DIR)
+                        entry.put("isSymlink", false)
+                        
+                        entries.put(entry)
+                    }
                 }
+                
+                val res = JSObject()
+                res.put("entries", entries)
+                invoke.resolve(res)
+            } catch (e: Exception) {
+                invoke.reject("Failed to read directory: ${e.message}")
             }
-            
-            val res = JSObject()
-            res.put("entries", entries)
-            invoke.resolve(res)
-        } catch (e: Exception) {
-            invoke.reject("Failed to read directory: ${e.message}")
         }
     }
     
@@ -376,16 +382,19 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val treeUri = args.baseUri.toUri()
         val documentUri = resolveDocumentUri(treeUri, args.path)
         
-        try {
-            val inputStream = activity.contentResolver.openInputStream(documentUri)
-            inputStream?.use { stream ->
-                val bytes = stream.readBytes()
-                val res = JSObject()
-                res.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
-                invoke.resolve(res)
-            } ?: invoke.reject("Failed to open input stream")
-        } catch (e: Exception) {
-            invoke.reject("Failed to read file: ${e.message}")
+        // Run I/O operations on a background thread to avoid blocking the main thread
+        ioExecutor.execute {
+            try {
+                val inputStream = activity.contentResolver.openInputStream(documentUri)
+                inputStream?.use { stream ->
+                    val bytes = stream.readBytes()
+                    val res = JSObject()
+                    res.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                    invoke.resolve(res)
+                } ?: invoke.reject("Failed to open input stream")
+            } catch (e: Exception) {
+                invoke.reject("Failed to read file: ${e.message}")
+            }
         }
     }
     
@@ -394,39 +403,42 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafWriteFileArgs::class.java)
         val treeUri = args.baseUri.toUri()
         
-        try {
-            // Try to find existing file first
-            val existingDoc = navigateToDocument(treeUri, args.path)
-            
-            if (existingDoc != null && existingDoc.isFile) {
-                // File exists, write to it
-                val mode = if (args.append) "wa" else "wt"
-                val outputStream = activity.contentResolver.openOutputStream(existingDoc.uri, mode)
-                outputStream?.use { stream ->
-                    val data = Base64.decode(args.data, Base64.NO_WRAP)
-                    stream.write(data)
-                    invoke.resolve(JSObject())
-                } ?: invoke.reject("Failed to open output stream")
-            } else if (args.create) {
-                // File doesn't exist, create it
-                val (parentDoc, fileName) = getParentAndFilename(treeUri, args.path)
-                    ?: return invoke.reject("Invalid path")
+        // Run I/O operations on a background thread to avoid blocking the main thread
+        ioExecutor.execute {
+            try {
+                // Try to find existing file first
+                val existingDoc = navigateToDocument(treeUri, args.path)
                 
-                val mimeType = getMimeType(fileName)
-                val newDoc = parentDoc.createFile(mimeType, fileName)
-                    ?: return invoke.reject("Failed to create file")
-                
-                val outputStream = activity.contentResolver.openOutputStream(newDoc.uri, "wt")
-                outputStream?.use { stream ->
-                    val data = Base64.decode(args.data, Base64.NO_WRAP)
-                    stream.write(data)
-                    invoke.resolve(JSObject())
-                } ?: invoke.reject("Failed to open output stream for new file")
-            } else {
-                invoke.reject("File not found and create is false")
+                if (existingDoc != null && existingDoc.isFile) {
+                    // File exists, write to it
+                    val mode = if (args.append) "wa" else "wt"
+                    val outputStream = activity.contentResolver.openOutputStream(existingDoc.uri, mode)
+                    outputStream?.use { stream ->
+                        val data = Base64.decode(args.data, Base64.NO_WRAP)
+                        stream.write(data)
+                        invoke.resolve(JSObject())
+                    } ?: invoke.reject("Failed to open output stream")
+                } else if (args.create) {
+                    // File doesn't exist, create it
+                    val (parentDoc, fileName) = getParentAndFilename(treeUri, args.path)
+                        ?: return@execute invoke.reject("Invalid path")
+                    
+                    val mimeType = getMimeType(fileName)
+                    val newDoc = parentDoc.createFile(mimeType, fileName)
+                        ?: return@execute invoke.reject("Failed to create file")
+                    
+                    val outputStream = activity.contentResolver.openOutputStream(newDoc.uri, "wt")
+                    outputStream?.use { stream ->
+                        val data = Base64.decode(args.data, Base64.NO_WRAP)
+                        stream.write(data)
+                        invoke.resolve(JSObject())
+                    } ?: invoke.reject("Failed to open output stream for new file")
+                } else {
+                    invoke.reject("File not found and create is false")
+                }
+            } catch (e: Exception) {
+                invoke.reject("Failed to write file: ${e.message}")
             }
-        } catch (e: Exception) {
-            invoke.reject("Failed to write file: ${e.message}")
         }
     }
     
@@ -435,18 +447,20 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafCreateFileArgs::class.java)
         val treeUri = args.baseUri.toUri()
         
-        try {
-            val (parentDoc, fileName) = getParentAndFilename(treeUri, args.path)
-                ?: return invoke.reject("Invalid path")
-            
-            val mimeType = getMimeType(fileName)
-            val newDoc = parentDoc.createFile(mimeType, fileName)
-            
-            val res = JSObject()
-            res.put("uri", newDoc?.uri?.toString())
-            invoke.resolve(res)
-        } catch (e: Exception) {
-            invoke.reject("Failed to create file: ${e.message}")
+        ioExecutor.execute {
+            try {
+                val (parentDoc, fileName) = getParentAndFilename(treeUri, args.path)
+                    ?: return@execute invoke.reject("Invalid path")
+                
+                val mimeType = getMimeType(fileName)
+                val newDoc = parentDoc.createFile(mimeType, fileName)
+                
+                val res = JSObject()
+                res.put("uri", newDoc?.uri?.toString())
+                invoke.resolve(res)
+            } catch (e: Exception) {
+                invoke.reject("Failed to create file: ${e.message}")
+            }
         }
     }
     
@@ -455,38 +469,40 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafMkdirArgs::class.java)
         val treeUri = args.baseUri.toUri()
         
-        try {
-            val rootDoc = DocumentFile.fromTreeUri(activity, treeUri)
-                ?: return invoke.reject("Invalid tree URI")
-            
-            val pathParts = args.path.trimStart('/').split("/")
-            var currentDoc = rootDoc
-            
-            for (part in pathParts) {
-                val existingDir = currentDoc.findFile(part)
-                if (existingDir != null) {
-                    if (existingDir.isDirectory) {
-                        currentDoc = existingDir
+        ioExecutor.execute {
+            try {
+                val rootDoc = DocumentFile.fromTreeUri(activity, treeUri)
+                    ?: return@execute invoke.reject("Invalid tree URI")
+                
+                val pathParts = args.path.trimStart('/').split("/")
+                var currentDoc = rootDoc
+                
+                for (part in pathParts) {
+                    val existingDir = currentDoc.findFile(part)
+                    if (existingDir != null) {
+                        if (existingDir.isDirectory) {
+                            currentDoc = existingDir
+                        } else {
+                            return@execute invoke.reject("Path component '$part' exists but is not a directory")
+                        }
                     } else {
-                        return invoke.reject("Path component '$part' exists but is not a directory")
+                        val newDir = currentDoc.createDirectory(part)
+                            ?: return@execute invoke.reject("Failed to create directory '$part'")
+                        currentDoc = newDir
                     }
-                } else {
-                    val newDir = currentDoc.createDirectory(part)
-                        ?: return invoke.reject("Failed to create directory '$part'")
-                    currentDoc = newDir
+                    
+                    // If not recursive, only create the final directory
+                    if (!args.recursive && part != pathParts.last()) {
+                        return@execute invoke.reject("Parent directory does not exist and recursive is false")
+                    }
                 }
                 
-                // If not recursive, only create the final directory
-                if (!args.recursive && part != pathParts.last()) {
-                    return invoke.reject("Parent directory does not exist and recursive is false")
-                }
+                val res = JSObject()
+                res.put("uri", currentDoc.uri.toString())
+                invoke.resolve(res)
+            } catch (e: Exception) {
+                invoke.reject("Failed to create directory: ${e.message}")
             }
-            
-            val res = JSObject()
-            res.put("uri", currentDoc.uri.toString())
-            invoke.resolve(res)
-        } catch (e: Exception) {
-            invoke.reject("Failed to create directory: ${e.message}")
         }
     }
     
@@ -495,17 +511,19 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafRemoveArgs::class.java)
         val treeUri = args.baseUri.toUri()
         
-        try {
-            val documentUri = resolveDocumentUri(treeUri, args.path)
-            val deleted = DocumentsContract.deleteDocument(activity.contentResolver, documentUri)
-            
-            if (deleted) {
-                invoke.resolve(JSObject())
-            } else {
-                invoke.reject("Failed to delete document")
+        ioExecutor.execute {
+            try {
+                val documentUri = resolveDocumentUri(treeUri, args.path)
+                val deleted = DocumentsContract.deleteDocument(activity.contentResolver, documentUri)
+                
+                if (deleted) {
+                    invoke.resolve(JSObject())
+                } else {
+                    invoke.reject("Failed to delete document")
+                }
+            } catch (e: Exception) {
+                invoke.reject("Failed to delete: ${e.message}")
             }
-        } catch (e: Exception) {
-            invoke.reject("Failed to delete: ${e.message}")
         }
     }
     
@@ -514,21 +532,23 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafRenameArgs::class.java)
         val treeUri = args.baseUri.toUri()
         
-        try {
-            val sourceUri = resolveDocumentUri(treeUri, args.oldPath)
-            val newName = args.newPath.trimStart('/').split("/").last()
-            
-            val newUri = DocumentsContract.renameDocument(
-                activity.contentResolver,
-                sourceUri,
-                newName
-            )
-            
-            val res = JSObject()
-            res.put("uri", newUri?.toString())
-            invoke.resolve(res)
-        } catch (e: Exception) {
-            invoke.reject("Failed to rename: ${e.message}")
+        ioExecutor.execute {
+            try {
+                val sourceUri = resolveDocumentUri(treeUri, args.oldPath)
+                val newName = args.newPath.trimStart('/').split("/").last()
+                
+                val newUri = DocumentsContract.renameDocument(
+                    activity.contentResolver,
+                    sourceUri,
+                    newName
+                )
+                
+                val res = JSObject()
+                res.put("uri", newUri?.toString())
+                invoke.resolve(res)
+            } catch (e: Exception) {
+                invoke.reject("Failed to rename: ${e.message}")
+            }
         }
     }
     
@@ -537,37 +557,39 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafCopyFileArgs::class.java)
         val treeUri = args.baseUri.toUri()
         
-        try {
-            val sourceUri = resolveDocumentUri(treeUri, args.fromPath)
-            
-            // Get target parent directory
-            val (targetParentDoc, targetFileName) = getParentAndFilename(treeUri, args.toPath)
-                ?: return invoke.reject("Invalid target path")
-            
-            // Read source file
-            val inputStream = activity.contentResolver.openInputStream(sourceUri)
-                ?: return invoke.reject("Failed to open source file")
-            
-            // Create target file
-            val mimeType = getMimeType(targetFileName)
-            val targetDoc = targetParentDoc.createFile(mimeType, targetFileName)
-                ?: return invoke.reject("Failed to create target file")
-            
-            // Write to target
-            val outputStream = activity.contentResolver.openOutputStream(targetDoc.uri)
-                ?: return invoke.reject("Failed to open target file for writing")
-            
-            inputStream.use { input ->
-                outputStream.use { output ->
-                    copy(input, output)
+        ioExecutor.execute {
+            try {
+                val sourceUri = resolveDocumentUri(treeUri, args.fromPath)
+                
+                // Get target parent directory
+                val (targetParentDoc, targetFileName) = getParentAndFilename(treeUri, args.toPath)
+                    ?: return@execute invoke.reject("Invalid target path")
+                
+                // Read source file
+                val inputStream = activity.contentResolver.openInputStream(sourceUri)
+                    ?: return@execute invoke.reject("Failed to open source file")
+                
+                // Create target file
+                val mimeType = getMimeType(targetFileName)
+                val targetDoc = targetParentDoc.createFile(mimeType, targetFileName)
+                    ?: return@execute invoke.reject("Failed to create target file")
+                
+                // Write to target
+                val outputStream = activity.contentResolver.openOutputStream(targetDoc.uri)
+                    ?: return@execute invoke.reject("Failed to open target file for writing")
+                
+                inputStream.use { input ->
+                    outputStream.use { output ->
+                        copy(input, output)
+                    }
                 }
+                
+                val res = JSObject()
+                res.put("uri", targetDoc.uri.toString())
+                invoke.resolve(res)
+            } catch (e: Exception) {
+                invoke.reject("Failed to copy: ${e.message}")
             }
-            
-            val res = JSObject()
-            res.put("uri", targetDoc.uri.toString())
-            invoke.resolve(res)
-        } catch (e: Exception) {
-            invoke.reject("Failed to copy: ${e.message}")
         }
     }
     
@@ -586,52 +608,54 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
             DocumentsContract.Document.COLUMN_FLAGS
         )
         
-        try {
-            val cursor = activity.contentResolver.query(
-                documentUri,
-                projection,
-                null,
-                null,
-                null
-            )
-            
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val res = JSObject()
-                    val mimeType = it.getString(
-                        it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                    )
-                    
-                    res.put("isFile", mimeType != DocumentsContract.Document.MIME_TYPE_DIR)
-                    res.put("isDirectory", mimeType == DocumentsContract.Document.MIME_TYPE_DIR)
-                    res.put("isSymlink", false)
-                    res.put("size", it.getLong(
-                        it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
-                    ))
-                    res.put("mtime", it.getLong(
-                        it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-                    ))
-                    res.put("atime", JSONObject.NULL)
-                    res.put("birthtime", JSONObject.NULL)
-                    res.put("readonly", false)
-                    res.put("fileAttributes", JSONObject.NULL)
-                    res.put("dev", JSONObject.NULL)
-                    res.put("ino", JSONObject.NULL)
-                    res.put("mode", JSONObject.NULL)
-                    res.put("nlink", JSONObject.NULL)
-                    res.put("uid", JSONObject.NULL)
-                    res.put("gid", JSONObject.NULL)
-                    res.put("rdev", JSONObject.NULL)
-                    res.put("blksize", JSONObject.NULL)
-                    res.put("blocks", JSONObject.NULL)
-                    
-                    invoke.resolve(res)
-                } else {
-                    invoke.reject("File not found")
-                }
-            } ?: invoke.reject("Failed to query file info")
-        } catch (e: Exception) {
-            invoke.reject("Failed to stat file: ${e.message}")
+        ioExecutor.execute {
+            try {
+                val cursor = activity.contentResolver.query(
+                    documentUri,
+                    projection,
+                    null,
+                    null,
+                    null
+                )
+                
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val res = JSObject()
+                        val mimeType = it.getString(
+                            it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                        )
+                        
+                        res.put("isFile", mimeType != DocumentsContract.Document.MIME_TYPE_DIR)
+                        res.put("isDirectory", mimeType == DocumentsContract.Document.MIME_TYPE_DIR)
+                        res.put("isSymlink", false)
+                        res.put("size", it.getLong(
+                            it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+                        ))
+                        res.put("mtime", it.getLong(
+                            it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                        ))
+                        res.put("atime", JSONObject.NULL)
+                        res.put("birthtime", JSONObject.NULL)
+                        res.put("readonly", false)
+                        res.put("fileAttributes", JSONObject.NULL)
+                        res.put("dev", JSONObject.NULL)
+                        res.put("ino", JSONObject.NULL)
+                        res.put("mode", JSONObject.NULL)
+                        res.put("nlink", JSONObject.NULL)
+                        res.put("uid", JSONObject.NULL)
+                        res.put("gid", JSONObject.NULL)
+                        res.put("rdev", JSONObject.NULL)
+                        res.put("blksize", JSONObject.NULL)
+                        res.put("blocks", JSONObject.NULL)
+                        
+                        invoke.resolve(res)
+                    } else {
+                        invoke.reject("File not found")
+                    }
+                } ?: invoke.reject("Failed to query file info")
+            } catch (e: Exception) {
+                invoke.reject("Failed to stat file: ${e.message}")
+            }
         }
     }
     
@@ -641,25 +665,27 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val treeUri = args.baseUri.toUri()
         val documentUri = resolveDocumentUri(treeUri, args.path)
         
-        try {
-            val cursor = activity.contentResolver.query(
-                documentUri,
-                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
-                null,
-                null,
-                null
-            )
-            
-            val exists = cursor?.use { it.moveToFirst() } ?: false
-            
-            val res = JSObject()
-            res.put("exists", exists)
-            invoke.resolve(res)
-        } catch (e: Exception) {
-            // Document doesn't exist or access denied
-            val res = JSObject()
-            res.put("exists", false)
-            invoke.resolve(res)
+        ioExecutor.execute {
+            try {
+                val cursor = activity.contentResolver.query(
+                    documentUri,
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                    null,
+                    null,
+                    null
+                )
+                
+                val exists = cursor?.use { it.moveToFirst() } ?: false
+                
+                val res = JSObject()
+                res.put("exists", exists)
+                invoke.resolve(res)
+            } catch (e: Exception) {
+                // Document doesn't exist or access denied
+                val res = JSObject()
+                res.put("exists", false)
+                invoke.resolve(res)
+            }
         }
     }
     
@@ -833,52 +859,56 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         val args = invoke.parseArgs(SafWatchArgs::class.java)
         
         val treeUri = args.baseUri.toUri()
-        
         val documentUri = resolveDocumentUri(treeUri, args.path)
         
         val id = watcherId++
         
-        // Take initial snapshot
-        val initialSnapshot = takeDirectorySnapshot(treeUri, args.path, args.recursive)
-        
-        // Create timer for polling
-        val timer = Timer("SafWatcher-$id", true)
-        
-        val watcherState = WatcherState(
-            timer = timer,
-            treeUri = treeUri,
-            path = args.path,
-            recursive = args.recursive,
-            channel = args.onEvent,
-            lastSnapshot = initialSnapshot
-        )
-        
-        watchers[id] = watcherState
-        
-        // Schedule polling task
-        timer.scheduleAtFixedRate(object : TimerTask() {
-            override fun run() {
-                try {
-                    val currentWatcher = watchers[id] ?: return
-                    
-                    val newSnapshot = takeDirectorySnapshot(currentWatcher.treeUri, currentWatcher.path, currentWatcher.recursive)
-                    
-                    if (newSnapshot != currentWatcher.lastSnapshot) {
-                        compareSnapshots(id, currentWatcher.lastSnapshot, newSnapshot, currentWatcher.treeUri, currentWatcher.path, currentWatcher.channel)
-                        
-                        // Update the snapshot
-                        watchers[id] = currentWatcher.copy(lastSnapshot = newSnapshot)
+        // Take initial snapshot on a background thread to avoid blocking
+        ioExecutor.execute {
+            try {
+                val initialSnapshot = takeDirectorySnapshot(treeUri, args.path, args.recursive)
+                
+                // Create timer for polling (runs on its own daemon thread)
+                val timer = Timer("SafWatcher-$id", true)
+                
+                val watcherState = WatcherState(
+                    timer = timer,
+                    treeUri = treeUri,
+                    path = args.path,
+                    recursive = args.recursive,
+                    channel = args.onEvent,
+                    lastSnapshot = initialSnapshot
+                )
+                
+                watchers[id] = watcherState
+                
+                // Schedule polling task (already runs on Timer's background thread)
+                timer.scheduleAtFixedRate(object : TimerTask() {
+                    override fun run() {
+                        try {
+                            val currentWatcher = watchers[id] ?: return
+                            
+                            val newSnapshot = takeDirectorySnapshot(currentWatcher.treeUri, currentWatcher.path, currentWatcher.recursive)
+                            
+                            if (newSnapshot != currentWatcher.lastSnapshot) {
+                                compareSnapshots(id, currentWatcher.lastSnapshot, newSnapshot, currentWatcher.treeUri, currentWatcher.path, currentWatcher.channel)
+                                
+                                // Update the snapshot
+                                watchers[id] = currentWatcher.copy(lastSnapshot = newSnapshot)
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("FsPlugin", "Error in safWatch polling: ${e.message}")
+                        }
                     }
-                } catch (e: Exception) {
-                    android.util.Log.e("FsPlugin", "Error in safWatch polling: ${e.message}")
-                }
+                }, POLL_INTERVAL_MS, POLL_INTERVAL_MS)
+                
+                val res = JSObject()
+                res.put("watcherId", id)
+                invoke.resolve(res)
+            } catch (e: Exception) {
+                invoke.reject("Failed to start watcher: ${e.message}")
             }
-        }, POLL_INTERVAL_MS, POLL_INTERVAL_MS)
-        
-        
-        val res = JSObject()
-        res.put("watcherId", id)
-        invoke.resolve(res)
+        }
     }
     
     @Command
