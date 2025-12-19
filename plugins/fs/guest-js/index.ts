@@ -1091,7 +1091,6 @@ async function stat(
   options?: StatOptions
 ): Promise<FileInfo> {
   const resolved = resolvePath(path, options?.baseDir)
-  console.debug("resolved",)
   const res = await invoke<UnparsedFileInfo>('plugin:fs|stat', {
     path: resolved.path,
     options: { 
