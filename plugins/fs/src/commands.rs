@@ -1492,7 +1492,7 @@ use crate::models::{SafWatchEvent, SafWatchResponse};
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub fn saf_watch<R: Runtime>(
+pub async fn saf_watch<R: Runtime>(
     webview: Webview<R>,
     base_uri: String,
     path: String,
@@ -1507,7 +1507,7 @@ pub fn saf_watch<R: Runtime>(
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub fn saf_unwatch<R: Runtime>(
+pub async fn saf_unwatch<R: Runtime>(
     webview: Webview<R>,
     watcher_id: i32,
 ) -> CommandResult<()> {
