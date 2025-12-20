@@ -535,16 +535,45 @@ class FsPlugin(private val activity: Activity): Plugin(activity) {
         ioExecutor.execute {
             try {
                 val sourceUri = resolveDocumentUri(treeUri, args.oldPath)
-                val newName = args.newPath.trimStart('/').split("/").last()
                 
-                val newUri = DocumentsContract.renameDocument(
-                    activity.contentResolver,
-                    sourceUri,
-                    newName
-                )
+                val oldPathParts = args.oldPath.trimStart('/').split("/")
+                val newPathParts = args.newPath.trimStart('/').split("/")
+                
+                val oldParentPath = oldPathParts.dropLast(1).joinToString("/")
+                val newParentPath = newPathParts.dropLast(1).joinToString("/")
+                val newName = newPathParts.last()
+                
+                var resultUri: Uri? = sourceUri
+                
+                // If parent directories differ, we need to move the file
+                if (oldParentPath != newParentPath) {
+                    val sourceParentUri = resolveDocumentUri(treeUri, oldParentPath.ifEmpty { "" })
+                    val targetParentUri = resolveDocumentUri(treeUri, newParentPath.ifEmpty { "" })
+                    
+                    resultUri = DocumentsContract.moveDocument(
+                        activity.contentResolver,
+                        sourceUri,
+                        sourceParentUri,
+                        targetParentUri
+                    )
+                    
+                    if (resultUri == null) {
+                        return@execute invoke.reject("Failed to move document")
+                    }
+                }
+                
+                // If the filename changed, rename the document
+                val oldName = oldPathParts.last()
+                if (oldName != newName && resultUri != null) {
+                    resultUri = DocumentsContract.renameDocument(
+                        activity.contentResolver,
+                        resultUri,
+                        newName
+                    )
+                }
                 
                 val res = JSObject()
-                res.put("uri", newUri?.toString())
+                res.put("uri", resultUri?.toString())
                 invoke.resolve(res)
             } catch (e: Exception) {
                 invoke.reject("Failed to rename: ${e.message}")
